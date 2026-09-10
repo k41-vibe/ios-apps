@@ -1,0 +1,92 @@
+name: build-ipa
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/**"
+      - ".github/workflows/build.yml"
+  workflow_dispatch:
+    inputs:
+      app:
+        description: "apps/ 配下のアプリ名 (空なら全部)"
+        required: false
+        default: ""
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    outputs:
+      apps: ${{ steps.ls.outputs.apps }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: ls
+        shell: bash
+        run: |
+          want="${{ github.event.inputs.app }}"
+          if [ -n "$want" ]; then
+            apps=$(printf '["%s"]' "$want")
+          else
+            apps=$(ls -d apps/*/ | xargs -n1 basename | jq -R . | jq -sc .)
+          fi
+          echo "apps=$apps" >> "$GITHUB_OUTPUT"
+          echo "building: $apps"
+
+  build:
+    needs: list
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJson(needs.list.outputs.apps) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        working-directory: apps/${{ matrix.app }}
+        run: xcodegen generate
+
+      - name: Build (unsigned)
+        working-directory: apps/${{ matrix.app }}
+        run: |
+          xcodebuild \
+            -project "${{ matrix.app }}.xcodeproj" \
+            -scheme "${{ matrix.app }}" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            | tee build.log | grep -E "error:|warning: .*Swift|\*\* BUILD" || true
+          test -d "build/Build/Products/Release-iphoneos/${{ matrix.app }}.app"
+
+      - name: Package .ipa
+        working-directory: apps/${{ matrix.app }}
+        run: |
+          rm -rf Payload && mkdir Payload
+          cp -R "build/Build/Products/Release-iphoneos/${{ matrix.app }}.app" Payload/
+          zip -qr "${{ matrix.app }}.ipa" Payload
+          ls -la "${{ matrix.app }}.ipa"
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.app }}-build.log
+          path: apps/${{ matrix.app }}/build.log
+          if-no-files-found: ignore
+
+      - name: Upload .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.app }}.ipa
+          path: apps/${{ matrix.app }}/${{ matrix.app }}.ipa
+          if-no-files-found: error
