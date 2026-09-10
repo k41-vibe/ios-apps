@@ -1,4 +1,4 @@
-# apps/<Name> を GitHub Actions(macOS) でビルドし、.ipa を iPhone 受け渡し用フォルダへ置く
+﻿# apps/<Name> を GitHub Actions(macOS) でビルドし、.ipa を iPhone 受け渡し用フォルダへ置く
 # 使い方: .\tools\build.ps1 HelloLC [-NoPush]
 param(
     [Parameter(Mandatory = $true)][string]$Name,
