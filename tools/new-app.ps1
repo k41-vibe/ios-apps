@@ -1,4 +1,4 @@
-# 新しいアプリの雛形を apps/<Name> に作る
+﻿# 新しいアプリの雛形を apps/<Name> に作る
 # 使い方: .\tools\new-app.ps1 HelloLC
 param(
     [Parameter(Mandatory = $true)][ValidatePattern('^[A-Za-z][A-Za-z0-9]{1,30}$')][string]$Name
