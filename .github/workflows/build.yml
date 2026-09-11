@@ -18,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       apps: ${{ steps.ls.outputs.apps }}
+      stage: ${{ steps.ls.outputs.stage }}
     steps:
       - uses: actions/checkout@v4
       - id: ls
@@ -30,10 +31,51 @@ jobs:
             apps=$(ls -d apps/*/ | xargs -n1 basename | jq -R . | jq -sc .)
           fi
           echo "apps=$apps" >> "$GITHUB_OUTPUT"
-          echo "building: $apps"
+          # apps/<app>/stage.txt = needs the xiOS staged tree (ubuntu "stage" job)
+          stage=false
+          for a in $(echo "$apps" | jq -r '.[]'); do
+            if [ -f "apps/$a/stage.txt" ]; then stage=true; fi
+          done
+          echo "stage=$stage" >> "$GITHUB_OUTPUT"
+          echo "building: $apps (stage job: $stage)"
+
+  # xiOS .deb closure -> relinked Mach-Os + jb/ data tree (tools/xios/stage.py), on Linux to
+  # keep the macOS minutes for the Swift build. Only when some app has stage.txt.
+  stage:
+    needs: list
+    if: needs.list.outputs.stage == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install zstandard
+      - name: Restore .deb cache
+        uses: actions/cache@v4
+        with:
+          path: .deb-cache
+          key: xios-debs-${{ hashFiles('tools/xios/closure_sha256.txt') }}
+      - name: Stage xiOS closure
+        run: |
+          python tools/xios/stage.py \
+            --urls tools/xios/closure_urls.txt \
+            --sha tools/xios/closure_sha256.txt \
+            --cache .deb-cache \
+            --out stage \
+            --clean --collide=skip --symlinks never
+          du -sh stage/Frameworks stage/jb
+      - name: Upload staged tree
+        uses: actions/upload-artifact@v4
+        with:
+          name: xios-stage
+          path: stage
+          if-no-files-found: error
 
   build:
-    needs: list
+    needs: [list, stage]
+    # run even when the stage job was skipped (apps without stage.txt), never when it failed
+    if: ${{ !cancelled() && needs.list.result == 'success' && (needs.stage.result == 'success' || needs.stage.result == 'skipped') }}
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -71,10 +113,21 @@ jobs:
           test -d "$app"
           test -x "$app/${{ matrix.app }}" || { echo "::error::main executable missing in $app"; exit 1; }
 
+      - name: Download staged tree (apps with stage.txt)
+        if: hashFiles(format('apps/{0}/stage.txt', matrix.app)) != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: xios-stage
+          path: stage
+
       - name: Post-build hook (apps/<app>/postbuild.sh)
         working-directory: apps/${{ matrix.app }}
         run: |
           if [ -f postbuild.sh ]; then
+            if [ -f stage.txt ]; then
+              export STAGE_DIR="$GITHUB_WORKSPACE/stage"
+              test -d "$STAGE_DIR/Frameworks" || { echo "::error::staged tree missing at $STAGE_DIR"; exit 1; }
+            fi
             APP_DIR="$PWD/build/Build/Products/Release-iphoneos/${{ matrix.app }}.app" bash postbuild.sh
           else
             echo "no postbuild.sh"
@@ -85,7 +138,11 @@ jobs:
         run: |
           rm -rf Payload && mkdir Payload
           cp -R "build/Build/Products/Release-iphoneos/${{ matrix.app }}.app" Payload/
-          zip -qr "${{ matrix.app }}.ipa" Payload
+          if [ -f stage.txt ]; then
+            zip -qr -y "${{ matrix.app }}.ipa" Payload   # -y: store symlinks as symlinks
+          else
+            zip -qr "${{ matrix.app }}.ipa" Payload
+          fi
           ls -la "${{ matrix.app }}.ipa"
 
       - name: Upload build log

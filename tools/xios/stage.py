@@ -22,10 +22,19 @@ Output layout:
   <stagedir>/symlinks.json       every tar symlink and how it was materialised
   <stagedir>/failures.json       Mach-Os that could not be relinked (also printed)
 
-Symlinks: a real symlink where the OS allows it; otherwise (Windows without
-symlink privilege) the target file is copied - after relinking, so a link to a
-Mach-O copies the small @LC stub, not the binary - and links to directories or
-missing targets become "<path>.symlink" marker files holding the link target.
+Symlinks: a real symlink where the OS allows it (absolute /var/jb/... targets
+are rewritten relative to the link so they stay valid inside the bundle);
+otherwise (Windows without symlink privilege, or --symlinks never) the target
+file is copied - after relinking, so a link to a Mach-O copies the small @LC
+stub, not the binary - and links to directories or missing targets become
+"<path>.symlink" marker files holding the link target (libLCsys resolves them
+at run time). --symlinks never is what CI uses: no symlink then has to survive
+upload-artifact, zip and LiveContainer's unzip.
+
+--libsystem-shim NAME (default libLCsys.dylib): every relinked Mach-O gets its
+/usr/lib/libSystem.B.dylib load command rewritten to @rpath/NAME. NAME is NOT
+staged here - the app's postbuild.sh builds it from apps/<app>/native/ and
+drops it into Frameworks/ next to the relinked files.
 stdlib + zstandard only.
 """
 import argparse
@@ -269,7 +278,7 @@ def classify_machos(records):
     return found, shipped
 
 
-def relink_all(records, frameworks_dir, collide="fail"):
+def relink_all(records, frameworks_dir, collide="fail", libsystem_shim=None):
     manifest, failures = [], []
     seen = {}  # casefolded flat -> orig_path
     machos, shipped = classify_machos(records)
@@ -288,7 +297,7 @@ def relink_all(records, frameworks_dir, collide="fail"):
             seen[key] = orig
             with open(dest, "rb") as f:
                 data = f.read()
-            out, summary = relink.relink_bytes(data, shipped)
+            out, summary = relink.relink_bytes(data, shipped, libsystem_shim, "@rpath/" + flat)
         except SystemExit:
             raise
         except Exception as e:  # noqa: BLE001
@@ -301,14 +310,16 @@ def relink_all(records, frameworks_dir, collide="fail"):
         info["stub_for"] = flat
         manifest.append({"orig_path": orig, "flat": flat, "kind": kind, "entryoff": summary["entryoff"],
                          "package": info["package"], "size": len(out), "rootful": info["rootful"],
-                         "deps": summary["deps_after"], "rpaths": summary["rpaths_after"],
+                         "id": summary["id_after"], "deps": summary["deps_after"], "rpaths": summary["rpaths_after"],
                          "rpath_via_dylinker": summary["rpath_via_dylinker"], "warnings": summary["warnings"]})
     return manifest, failures, shipped
 
 
-def add_alias_copies(records, manifest, frameworks_dir):
+def add_alias_copies(records, manifest, frameworks_dir, libsystem_shim=None):
     """Frameworks/<b> for every @rpath/<b> dep that is missing but is a staged symlink alias of a staged dylib."""
     present = {m["flat"].casefold() for m in manifest}
+    if libsystem_shim:
+        present.add(libsystem_shim.casefold())  # built by postbuild.sh, never staged
     needed = {d[len("@rpath/"):] for m in manifest for d in m["deps"] if d.startswith("@rpath/")}
     missing = {b for b in needed if b.casefold() not in present}
     by_flat = {m["flat"]: m for m in manifest}
@@ -356,7 +367,13 @@ def materialise_symlinks(records, symlink_ok, jb_root):
         if symlink_ok:
             if os.path.lexists(dest):
                 os.remove(dest)
-            os.symlink(s["target"], dest)
+            target = s["target"]
+            if target.startswith("/var/jb/") or target == "/var/jb":
+                # keep the link valid inside the bundle: point at the staged file relatively
+                target = os.path.relpath(os.path.join(jb_root, target[len("/var/jb/"):]),
+                                         os.path.dirname(dest)).replace("\\", "/")
+                entry["relative_target"] = target
+            os.symlink(target, dest)
             entry["how"] = "symlink"
             results.append(entry)
             continue
@@ -412,7 +429,13 @@ def main(argv=None):
     ap.add_argument("--collide", choices=("fail", "skip"), default="fail",
                     help="two Mach-Os mapping to one flat name: abort (default) or skip the later one "
                          "(/var/jb/usr/... paths are processed first, so they win) and report it")
+    ap.add_argument("--symlinks", choices=("auto", "never"), default="auto",
+                    help="auto: real symlinks when the OS allows; never: always copy/marker (CI uses never)")
+    ap.add_argument("--libsystem-shim", metavar="NAME", default="libLCsys.dylib",
+                    help="rewrite LC_LOAD_DYLIB /usr/lib/libSystem.B.dylib to @rpath/NAME in every relinked "
+                         "Mach-O (default libLCsys.dylib; empty string disables)")
     args = ap.parse_args(argv)
+    libsystem_shim = args.libsystem_shim or None
 
     urls = read_urls(args.urls)
     sums = read_sha(args.sha)
@@ -424,8 +447,10 @@ def main(argv=None):
     meta = os.path.join(args.out, "meta")
     for d in (jb_root, frameworks, meta):
         os.makedirs(d, exist_ok=True)
-    symlink_ok = can_symlink(args.out)
-    log("symlink support: %s" % ("yes" if symlink_ok else "no (copy/marker fallback)"))
+    symlink_ok = args.symlinks == "auto" and can_symlink(args.out)
+    log("symlink support: %s" % ("yes" if symlink_ok else
+                                 "no (copy/marker fallback%s)" % (", --symlinks never" if args.symlinks == "never" else "")))
+    log("libSystem shim: %s" % (("@rpath/" + libsystem_shim) if libsystem_shim else "off"))
 
     # 1. download
     debs = []
@@ -475,8 +500,8 @@ def main(argv=None):
         log("  NOTE skipped %d unsupported tar entries: %s" % (len(records["skipped"]), records["skipped"][:5]))
 
     # 3+4. relink Mach-Os, write stubs + manifest
-    manifest, failures, shipped = relink_all(records, frameworks, args.collide)
-    aliases, unresolved = add_alias_copies(records, manifest, frameworks)
+    manifest, failures, shipped = relink_all(records, frameworks, args.collide, libsystem_shim)
+    aliases, unresolved = add_alias_copies(records, manifest, frameworks, libsystem_shim)
     with open(os.path.join(args.out, "shipped_dylibs.txt"), "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(sorted(shipped)) + "\n")
     with open(os.path.join(args.out, "manifest.json"), "w", encoding="utf-8", newline="\n") as f:
@@ -498,12 +523,20 @@ def main(argv=None):
     log("== stage summary: %s" % os.path.abspath(args.out))
     log("Mach-O relinked: %d (exe %d, dylib %d); failed: %d; rootful: %d"
         % (len(manifest), n_exe, n_dylib, len(failures), sum(1 for m in manifest if m["rootful"])))
+    if libsystem_shim:
+        n_shim = sum(1 for m in manifest if "@rpath/" + libsystem_shim in m["deps"])
+        n_sys = sum(1 for m in manifest if relink.LIBSYSTEM in m["deps"])
+        log("libSystem -> @rpath/%s: %d images rewritten, %d still on %s (should be 0), %d link neither"
+            % (libsystem_shim, n_shim, n_sys, relink.LIBSYSTEM, len(manifest) - n_shim - n_sys))
     log("Frameworks/: %s in %d files (of which %d alias copies, %s)"
         % (human(fw_bytes), len(os.listdir(frameworks)), len(aliases), human(sum(a["size"] for a in aliases))))
     for a in aliases:
         log("  alias %-32s -> %s" % (a["flat"], a["alias_of"]))
     if unresolved:
         log("@rpath deps with no file in Frameworks/ (closure gap, or dyld /usr/lib fallback): %s" % " ".join(unresolved))
+    n_noid = [m["flat"] for m in manifest if m["kind"] == "exe" and not m["id"]]
+    log("former executables with LC_ID_DYLIB appended: %d; without (will not dlopen): %d %s"
+        % (n_exe - len(n_noid), len(n_noid), " ".join(n_noid[:10])))
     n_dyl = sum(1 for m in manifest if m["rpath_via_dylinker"])
     warned = [m for m in manifest if m["warnings"]]
     log("rpath via LC_LOAD_DYLINKER slot: %d; entries with warnings: %d (see manifest.json 'warnings')" % (n_dyl, len(warned)))
