@@ -42,8 +42,15 @@ if ($LASTEXITCODE -ne 0) {
 New-Item -ItemType Directory -Force $Dest | Out-Null
 New-Item -ItemType Directory -Force "$root\dist" | Out-Null
 $tmp = Join-Path $env:TEMP "ios-apps-ipa-$runId"
-gh run download $runId -n "$Name.ipa" -D $tmp
-$ipa = Get-ChildItem $tmp -Filter *.ipa -Recurse | Select-Object -First 1
+# 大きい ipa(100MB 級)は途中で接続が切れることがあるので 3 回まで再試行
+$ipa = $null
+for ($try = 1; $try -le 3 -and -not $ipa; $try++) {
+    if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+    gh run download $runId -n "$Name.ipa" -D $tmp 2>&1 | Out-Null
+    $ipa = Get-ChildItem $tmp -Filter *.ipa -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $ipa) { Write-Host "download retry $try"; Start-Sleep -Seconds 5 }
+}
+if (-not $ipa) { throw "ipa のダウンロードに失敗 (run $runId)" }
 Copy-Item $ipa.FullName "$root\dist\$Name.ipa" -Force
 Copy-Item $ipa.FullName "$Dest\$Name.ipa" -Force
 Write-Host "完成: $Dest\$Name.ipa  ($([math]::Round($ipa.Length/1KB)) KB)"
