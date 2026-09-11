@@ -1,0 +1,34 @@
+name: XiOSLite
+options:
+  bundleIdPrefix: com.rutoi
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "16.0"
+targets:
+  XiOSLite:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: XiOSLite
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        ITSAppUsesNonExemptEncryption: false
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.rutoi.xioslite
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_REQUIRED: "NO"
+        ENABLE_BITCODE: "NO"
+        LD_RUNPATH_SEARCH_PATHS: "@executable_path/Frameworks"
