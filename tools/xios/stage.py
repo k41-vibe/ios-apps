@@ -246,7 +246,8 @@ def is_macho_file(path):
 def classify_machos(records):
     """Parse every Mach-O under jb/. Returns [(orig, info, kind|None, header|error)] and the shipped basename set."""
     found, shipped = [], set()
-    for orig, info in sorted(records["files"].items()):
+    # /var/jb/usr/... first so that on a flat-name collision the /usr/bin copy wins (e.g. /bin/sync vs /usr/bin/sync)
+    for orig, info in sorted(records["files"].items(), key=lambda kv: (not kv[0].startswith("/var/jb/usr/"), kv[0])):
         if not is_macho_file(info["dest"]):
             continue
         try:
@@ -409,7 +410,8 @@ def main(argv=None):
     ap.add_argument("--out", required=True)
     ap.add_argument("--clean", action="store_true", help="delete <out> before staging")
     ap.add_argument("--collide", choices=("fail", "skip"), default="fail",
-                    help="two Mach-Os mapping to one flat name: abort (default) or skip the second and report it")
+                    help="two Mach-Os mapping to one flat name: abort (default) or skip the later one "
+                         "(/var/jb/usr/... paths are processed first, so they win) and report it")
     args = ap.parse_args(argv)
 
     urls = read_urls(args.urls)
