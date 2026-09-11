@@ -55,6 +55,7 @@ jobs:
       - name: Build (unsigned)
         working-directory: apps/${{ matrix.app }}
         run: |
+          set -o pipefail
           xcodebuild \
             -project "${{ matrix.app }}.xcodeproj" \
             -scheme "${{ matrix.app }}" \
@@ -65,8 +66,10 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            | tee build.log | grep -E "error:|warning: .*Swift|\*\* BUILD" || true
-          test -d "build/Build/Products/Release-iphoneos/${{ matrix.app }}.app"
+            2>&1 | tee build.log | (grep -E "error:|warning: .*Swift|\*\* BUILD" || true)
+          app="build/Build/Products/Release-iphoneos/${{ matrix.app }}.app"
+          test -d "$app"
+          test -x "$app/${{ matrix.app }}" || { echo "::error::main executable missing in $app"; exit 1; }
 
       - name: Post-build hook (apps/<app>/postbuild.sh)
         working-directory: apps/${{ matrix.app }}

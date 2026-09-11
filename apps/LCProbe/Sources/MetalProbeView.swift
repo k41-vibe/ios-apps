@@ -37,7 +37,8 @@ final class SurfaceProbe: NSObject, MTKViewDelegate {
         }
         texture = tex
         super.init()
-        log.log("IOSurface \(width)x\(height) ok, id \(s.surfaceID), MTLTexture from IOSurface ok")
+        let sid = IOSurfaceGetID(unsafeBitCast(s, to: IOSurfaceRef.self))
+        log.log("IOSurface \(width)x\(height) ok, id \(sid), MTLTexture from IOSurface ok")
         startWriter()
     }
 
