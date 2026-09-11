@@ -31,6 +31,18 @@ stub, not the binary - and links to directories or missing targets become
 at run time). --symlinks never is what CI uses: no symlink then has to survive
 upload-artifact, zip and LiveContainer's unzip.
 
+Invariant: jb/ contains NO Mach-O file. Every Mach-O (plugins in subdirs such
+as engines-3/, ossl-modules/, gdk-pixbuf loaders, gtk printbackends, and the
+executables inside nested .app dirs - records["files"] is flat, so those dirs
+are nothing special) is relinked into Frameworks/ under a unique flat name and
+replaced by a stub; a symlink that resolves to a Mach-O becomes a stub file
+with the same "@LC:Frameworks/<flat>" text (never a copy of the binary).
+A final scan of jb/ for Mach-O magic fails the run (exit 2) listing offenders
+unless --allow-raw-macho is given. Flat-name collisions (same basename in two
+dirs, e.g. gtk-3.0/.../libprintbackend-file.so vs gtk-4.0/...) get a unique
+name from the parent directory chain ("gtk-4.0__4.0.0__printbackends__lib...")
+with the default --collide=prefix; skip/fail keep the old behaviour.
+
 --libsystem-shim NAME (default libLCsys.dylib): every relinked Mach-O gets its
 /usr/lib/libSystem.B.dylib load command rewritten to @rpath/NAME. NAME is NOT
 staged here - the app's postbuild.sh builds it from apps/<app>/native/ and
@@ -243,6 +255,20 @@ def flat_name(orig_path, kind, install_name=None):
     return base
 
 
+MACHO_MAGICS = (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf",  # MH_MAGIC_64 LE / BE spelling
+                b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xce",  # MH_MAGIC (32-bit)
+                b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca")  # FAT_MAGIC / FAT_CIGAM
+
+
+def has_macho_magic(path):
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4)
+    except OSError:
+        return False
+    return len(head) == 4 and head in MACHO_MAGICS
+
+
 def is_macho_file(path):
     try:
         with open(path, "rb") as f:
@@ -250,6 +276,47 @@ def is_macho_file(path):
     except OSError:
         return False
     return relink.is_macho(head)
+
+
+FLAT_PREFIX_STRIP = ("/var/jb/usr/local/lib/", "/var/jb/usr/lib/", "/var/jb/usr/local/bin/", "/var/jb/usr/bin/",
+                     "/var/jb/bin/", "/var/jb/sbin/", "/var/jb/")
+
+
+def prefixed_flat_names(orig_path, flat):
+    """Candidate unique flat names for a collision, most readable first: the parent dir chain below the
+    usual lib/bin roots joined with '__', then the full chain under /var/jb/, then numbered variants.
+    /var/jb/usr/lib/gtk-4.0/4.0.0/printbackends/libprintbackend-file.so -> gtk-4.0__4.0.0__printbackends__<flat>
+    /var/jb/bin/sync (nothing left after stripping /var/jb/bin/)         -> bin__<flat>"""
+    def chain(rel):
+        parts = rel.split("/")[:-1]
+        parts = [p.replace(".", "_") if p.endswith((".app", ".framework")) else p for p in parts]
+        return "__".join(parts + [flat]) if parts else None
+    cands = []
+    for pre in FLAT_PREFIX_STRIP:
+        if orig_path.startswith(pre):
+            c = chain(orig_path[len(pre):])
+            if c:
+                cands.append(c)
+            break
+    full = chain(orig_path[len("/var/jb/"):]) if orig_path.startswith("/var/jb/") else None
+    if full and full not in cands:
+        cands.append(full)
+    base = cands[-1] if cands else flat
+    cands += ["%d__%s" % (i, base) for i in range(2, 10)]
+    return cands
+
+
+def scan_raw_machos(jb_root):
+    """Every regular file under jb/ that still starts with a Mach-O magic (the invariant says: none)."""
+    found = []
+    for dp, _dn, fn in os.walk(jb_root):
+        for n in fn:
+            path = os.path.join(dp, n)
+            if os.path.islink(path):
+                continue
+            if has_macho_magic(path):
+                found.append(os.path.relpath(path, jb_root).replace("\\", "/"))
+    return sorted(found)
 
 
 def classify_machos(records):
@@ -278,12 +345,13 @@ def classify_machos(records):
     return found, shipped
 
 
-def relink_all(records, frameworks_dir, collide="fail", libsystem_shim=None):
+def relink_all(records, frameworks_dir, collide="prefix", libsystem_shim=None):
     manifest, failures = [], []
     seen = {}  # casefolded flat -> orig_path
     machos, shipped = classify_machos(records)
     for orig, info, kind, hdr in machos:
         dest = info["dest"]
+        renamed_from = None
         try:
             if kind is None:
                 raise relink.RelinkError(hdr)
@@ -293,7 +361,14 @@ def relink_all(records, frameworks_dir, collide="fail", libsystem_shim=None):
                 msg = "flat name collision: %r <- %s and %s" % (flat, seen[key], orig)
                 if collide == "fail":
                     raise SystemExit(msg)
-                raise relink.RelinkError(msg + " (second one skipped: --collide=skip)")
+                if collide == "skip":
+                    raise relink.RelinkError(msg + " (second one skipped: --collide=skip)")
+                renamed_from = flat
+                free = [c for c in prefixed_flat_names(orig, flat) if c.casefold() not in seen]
+                if not free:
+                    raise relink.RelinkError(msg + " (every prefixed name collides too)")
+                flat = free[0]
+                key = flat.casefold()
             seen[key] = orig
             with open(dest, "rb") as f:
                 data = f.read()
@@ -308,10 +383,15 @@ def relink_all(records, frameworks_dir, collide="fail", libsystem_shim=None):
         with open(dest, "w", encoding="utf-8", newline="") as f:
             f.write(STUB_PREFIX + flat)
         info["stub_for"] = flat
+        warnings = list(summary["warnings"])
+        if renamed_from:
+            warnings.append("flat_renamed: %r collided, staged as %r (dlopen via its stub still works; "
+                            "an @rpath/%s dependent would not find this copy)" % (renamed_from, flat, renamed_from))
         manifest.append({"orig_path": orig, "flat": flat, "kind": kind, "entryoff": summary["entryoff"],
                          "package": info["package"], "size": len(out), "rootful": info["rootful"],
                          "id": summary["id_after"], "deps": summary["deps_after"], "rpaths": summary["rpaths_after"],
-                         "rpath_via_dylinker": summary["rpath_via_dylinker"], "warnings": summary["warnings"]})
+                         "rpath_via_dylinker": summary["rpath_via_dylinker"], "warnings": warnings,
+                         "renamed_from": renamed_from})
     return manifest, failures, shipped
 
 
@@ -384,7 +464,19 @@ def materialise_symlinks(records, symlink_ok, jb_root):
             hops += 1
         entry["resolved"] = cur
         src = records["files"].get(cur)
-        if src and os.path.isfile(src["dest"]):
+        if src and src.get("stub_for"):
+            # target is a relinked Mach-O: write the same stub text, never the binary
+            with open(dest, "w", encoding="utf-8", newline="") as f:
+                f.write(STUB_PREFIX + src["stub_for"])
+            entry["how"] = "stub"
+            entry["stub_for"] = src["stub_for"]
+        elif src and os.path.isfile(src["dest"]):
+            if has_macho_magic(src["dest"]):
+                entry["how"] = "marker-raw-macho"  # target failed to relink; a marker, not a copy
+                with open(dest + ".symlink", "w", encoding="utf-8", newline="\n") as f:
+                    f.write(s["target"] + "\n")
+                results.append(entry)
+                continue
             shutil.copyfile(src["dest"], dest)
             entry["how"] = "copied"
             entry["copied_bytes"] = os.path.getsize(dest)
@@ -426,9 +518,12 @@ def main(argv=None):
     ap.add_argument("--cache", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--clean", action="store_true", help="delete <out> before staging")
-    ap.add_argument("--collide", choices=("fail", "skip"), default="fail",
-                    help="two Mach-Os mapping to one flat name: abort (default) or skip the later one "
-                         "(/var/jb/usr/... paths are processed first, so they win) and report it")
+    ap.add_argument("--collide", choices=("prefix", "skip", "fail"), default="prefix",
+                    help="two Mach-Os mapping to one flat name: prefix (default) gives the later one a unique "
+                         "name from its parent dirs; skip leaves it raw (the scan then fails); fail aborts. "
+                         "/var/jb/usr/... paths are processed first, so they keep the plain name")
+    ap.add_argument("--allow-raw-macho", action="store_true",
+                    help="do not fail when a Mach-O file is left under jb/ (default: exit 2 and list them)")
     ap.add_argument("--symlinks", choices=("auto", "never"), default="auto",
                     help="auto: real symlinks when the OS allows; never: always copy/marker (CI uses never)")
     ap.add_argument("--libsystem-shim", metavar="NAME", default="libLCsys.dylib",
@@ -509,7 +604,7 @@ def main(argv=None):
     with open(os.path.join(args.out, "failures.json"), "w", encoding="utf-8", newline="\n") as f:
         json.dump(failures, f, indent=1)
 
-    # symlinks last so copies of Mach-O links pick up the @LC stub
+    # symlinks AFTER relinking: a link to a Mach-O becomes the same @LC stub (stub_for), never a copy
     links = materialise_symlinks(records, symlink_ok, jb_root)
     with open(os.path.join(args.out, "symlinks.json"), "w", encoding="utf-8", newline="\n") as f:
         json.dump(links, f, indent=1)
@@ -559,6 +654,26 @@ def main(argv=None):
         log("FAILED to relink (left as raw Mach-O in jb/):")
         for fl in failures:
             log("  %s (%s): %s" % (fl["orig_path"], fl["package"], fl["error"]))
+    renamed = [m for m in manifest if m.get("renamed_from")]
+    if renamed:
+        log("flat-name collisions resolved by prefixing: %d" % len(renamed))
+        for m in renamed:
+            log("  %s -> %s" % (m["orig_path"], m["flat"]))
+
+    # 6. invariant: no Mach-O file under jb/
+    n_stub_files = sum(1 for info in records["files"].values() if info.get("stub_for"))
+    n_stub_links = how_counts.get("stub", 0)
+    log("counts: Frameworks/ %d files (%d relinked + %d alias copies); jb/ stubs %d (%d relinked files + %d symlink stubs); "
+        "relink failures %d" % (len(os.listdir(frameworks)), len(manifest) - len(aliases), len(aliases),
+                                n_stub_files + n_stub_links, n_stub_files, n_stub_links, len(failures)))
+    raw = scan_raw_machos(jb_root)
+    log("scan jb/ for Mach-O magic: %d raw Mach-O file(s)%s" % (len(raw), "" if raw else " (OK)"))
+    for r in raw:
+        log("  RAW  jb/%s" % r)
+    if raw and not args.allow_raw_macho:
+        log("ERROR: jb/ must contain no Mach-O (every one is relinked into Frameworks/ + stubbed); "
+            "pass --allow-raw-macho to override")
+        return 2
     return 0
 
 

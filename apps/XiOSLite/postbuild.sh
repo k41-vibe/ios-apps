@@ -55,6 +55,28 @@ cp -R "$STAGE_DIR/jb" "$APP_DIR/jb"
 cp "$STAGE_DIR/manifest.json" "$APP_DIR/jb/manifest.json"
 [ -f "$STAGE_DIR/symlinks.json" ] && cp "$STAGE_DIR/symlinks.json" "$APP_DIR/jb/symlinks.json"
 
+# Invariant (stage.py): jb/ holds data + @LC stubs only. A raw Mach-O here would be signed by
+# LiveContainer as a stray dylib instead of being loaded via Frameworks/<flat>; fail the build.
+echo "== scanning $APP_DIR/jb for raw Mach-O files"
+python3 - "$APP_DIR/jb" <<'PY' || { echo "::error::raw Mach-O file(s) under jb/ (see list above); stage.py must relink + stub every Mach-O"; exit 1; }
+import os, sys
+root = sys.argv[1]
+magics = {bytes.fromhex(h) for h in ("cffaedfe", "feedfacf", "cefaedfe", "feedface", "cafebabe", "bebafeca")}
+raw = []
+for dp, _dn, fn in os.walk(root):
+    for n in fn:
+        p = os.path.join(dp, n)
+        if os.path.islink(p):
+            continue
+        with open(p, "rb") as f:
+            if f.read(4) in magics:
+                raw.append(os.path.relpath(p, root))
+for r in sorted(raw):
+    print("  RAW jb/" + r)
+print("jb/ raw Mach-O files: %d" % len(raw))
+sys.exit(1 if raw else 0)
+PY
+
 echo "Frameworks/: $(ls "$FW" | wc -l) entries"
 echo "jb/ files: $(find "$APP_DIR/jb" -type f | wc -l), symlinks: $(find "$APP_DIR/jb" -type l | wc -l), .symlink markers: $(find "$APP_DIR/jb" -name '*.symlink' | wc -l)"
 du -sh "$FW" "$APP_DIR/jb" "$APP_DIR"
