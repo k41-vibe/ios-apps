@@ -12,8 +12,14 @@
  * (absolute = jb-rooted guest path, relative = against the marker's dir);
  * the remaining suffix is re-appended and the walk restarts (max 8 hops).
  *
- * "@LC:Frameworks/<flat>" stub files stand where relinked Mach-Os were;
- * lcsys_resolve_macho() turns them into <bundle>/Frameworks/<flat>.
+ * "<name>.lc" stub files (text "@LC:Frameworks/<flat>") stand where relinked
+ * Mach-Os were; nothing is left at <name> itself (LiveContainer's installer
+ * picks signing candidates by file name, so the stub must not be called
+ * libfoo.dylib). The guest still sees /var/jb/<name>: when the mapped leaf is
+ * missing but "<leaf>.lc" exists, the resolver returns the .lc path, so
+ * stat/access/open of the guest path report the stub. lcsys_resolve_macho()
+ * turns the stub text into <bundle>/Frameworks/<flat>. (readdir is not
+ * faked: `ls /var/jb/usr/bin` lists ls.lc, not ls.)
  *
  * Only lcsys_real.* is used for filesystem access (the bare names would bind
  * to our own overrides in lcsys.c).
@@ -208,6 +214,26 @@ static int marker_hop(char *path, size_t cap)
     }
 }
 
+/* "<path>.lc" stands for the missing leaf `path` (a relinked Mach-O). Appends the
+ * suffix in place when that file exists. Returns 1 if it did. */
+static int stub_hop(char *path, size_t cap)
+{
+    struct stat st;
+    size_t l = strlen(path), sl = strlen(LCSYS_STUB_SUFFIX);
+    if (!under_jb(path) || l + sl + 1 > cap)
+        return 0;
+    if (l >= sl && strcmp(path + l - sl, LCSYS_STUB_SUFFIX) == 0)
+        return 0; /* already the stub itself */
+    memcpy(path + l, LCSYS_STUB_SUFFIX, sl + 1);
+    if (lcsys_real.lstat(path, &st) == 0) {
+        if (lcsys_cfg.trace)
+            lcsys_log("stub %s", path);
+        return 1;
+    }
+    path[l] = '\0';
+    return 0;
+}
+
 char *lcsys_resolve_path(const char *in, char *out, size_t cap)
 {
     int hops;
@@ -218,8 +244,10 @@ char *lcsys_resolve_path(const char *in, char *out, size_t cap)
     for (hops = 0; hops < 8; hops++) {
         if (lcsys_real.lstat(out, &st) == 0)
             return out;
-        if (!marker_hop(out, cap))
-            return out;
+        if (marker_hop(out, cap))
+            continue;
+        stub_hop(out, cap); /* missing leaf, "<leaf>.lc" present: report the stub */
+        return out;
     }
     return out;
 }
@@ -229,6 +257,8 @@ char *lcsys_resolve_macho(const char *in, char *out, size_t cap)
     char head[LCSYS_PATH_MAX];
     int fd;
     ssize_t n;
+    /* <mapped> (a real file or a .symlink chain), else <mapped>.lc: resolve_path
+     * does both; the open below fails with ENOENT when neither exists */
     lcsys_resolve_path(in, out, cap);
     fd = lcsys_real.open(out, O_RDONLY | O_CLOEXEC, 0);
     if (fd < 0)

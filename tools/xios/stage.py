@@ -5,7 +5,8 @@
 
 Output layout:
   <stagedir>/jb/...              package payloads with the leading ./var/jb/ stripped
-                                 (Mach-O files replaced by "@LC:Frameworks/<flat>" stubs).
+                                 (every Mach-O removed; "<name>.lc" next to where it was holds
+                                 "@LC:Frameworks/<flat>" - nothing is left at <name> itself).
                                  Rootful debs (payload at ./usr/..., ./bin/...; the Procursus
                                  iphoneos-arm64/1800 pool) are merged here as if rooted at
                                  /var/jb and flagged rootful=true in packages.json/manifest.json.
@@ -25,20 +26,26 @@ Output layout:
 Symlinks: a real symlink where the OS allows it (absolute /var/jb/... targets
 are rewritten relative to the link so they stay valid inside the bundle);
 otherwise (Windows without symlink privilege, or --symlinks never) the target
-file is copied - after relinking, so a link to a Mach-O copies the small @LC
-stub, not the binary - and links to directories or missing targets become
+file is copied - after relinking; a link to a Mach-O becomes a "<link>.lc"
+stub in either mode, never a copy - and links to directories or missing targets become
 "<path>.symlink" marker files holding the link target (libLCsys resolves them
 at run time). --symlinks never is what CI uses: no symlink then has to survive
 upload-artifact, zip and LiveContainer's unzip.
 
-Invariant: jb/ contains NO Mach-O file. Every Mach-O (plugins in subdirs such
-as engines-3/, ossl-modules/, gdk-pixbuf loaders, gtk printbackends, and the
-executables inside nested .app dirs - records["files"] is flat, so those dirs
-are nothing special) is relinked into Frameworks/ under a unique flat name and
-replaced by a stub; a symlink that resolves to a Mach-O becomes a stub file
-with the same "@LC:Frameworks/<flat>" text (never a copy of the binary).
+Invariant: jb/ contains NO Mach-O file and no file NAMED like one. Every
+Mach-O (plugins in subdirs such as engines-3/, ossl-modules/, gdk-pixbuf
+loaders, gtk printbackends, and the executables inside nested .app dirs -
+records["files"] is flat, so those dirs are nothing special) is relinked into
+Frameworks/ under a unique flat name, deleted from jb/ and replaced by
+"<orig>.lc" (jb/usr/lib/libglib-2.0.0.dylib.lc, jb/usr/bin/ls.lc,
+jb/Applications/Xios.app/Xios.lc); a symlink that resolves to a Mach-O
+becomes the same "<link>.lc" stub (never a copy of the binary, never a real
+symlink). The ".lc" suffix is what keeps LiveContainer's installer - which
+picks signing candidates by name (*.dylib, executables inside *.app) - away
+from the stubs; libLCsys maps the guest-visible /var/jb/<orig> to the .lc file
+(manifest.json orig_path stays the guest path, without .lc).
 A final scan of jb/ for Mach-O magic fails the run (exit 2) listing offenders
-unless --allow-raw-macho is given. Flat-name collisions (same basename in two
+unless --allow-raw-macho is given; files still named *.dylib are counted. Flat-name collisions (same basename in two
 dirs, e.g. gtk-3.0/.../libprintbackend-file.so vs gtk-4.0/...) get a unique
 name from the parent directory chain ("gtk-4.0__4.0.0__printbackends__lib...")
 with the default --collide=prefix; skip/fail keep the old behaviour.
@@ -65,6 +72,7 @@ import relink  # noqa: E402
 JB_TAR_PREFIX = "./var/jb/"
 SCRIPT_NAMES = ("preinst", "postinst", "prerm", "postrm", "triggers", "config")
 STUB_PREFIX = "@LC:Frameworks/"
+STUB_SUFFIX = ".lc"
 USER_AGENT = "xios-stage/1.0 (+python-urllib)"
 
 
@@ -306,6 +314,26 @@ def prefixed_flat_names(orig_path, flat):
     return cands
 
 
+def write_stub(dest, flat):
+    """Replace dest (a relinked Mach-O, or the place a symlink to one would be) by "<dest>.lc" holding
+    "@LC:Frameworks/<flat>". Nothing stays at dest itself: LiveContainer's installer picks its signing
+    candidates by file name, and a 30-byte text file called libfoo.dylib shows up as "could not sign"."""
+    if os.path.lexists(dest):
+        os.remove(dest)
+    with open(dest + STUB_SUFFIX, "w", encoding="utf-8", newline="") as f:
+        f.write(STUB_PREFIX + flat)
+
+
+def scan_dylib_names(jb_root):
+    """Regular files under jb/ still named *.dylib (the installer would try to sign them; should be none)."""
+    found = []
+    for dp, _dn, fn in os.walk(jb_root):
+        for n in fn:
+            if n.endswith(".dylib"):
+                found.append(os.path.relpath(os.path.join(dp, n), jb_root).replace("\\", "/"))
+    return sorted(found)
+
+
 def scan_raw_machos(jb_root):
     """Every regular file under jb/ that still starts with a Mach-O magic (the invariant says: none)."""
     found = []
@@ -380,8 +408,7 @@ def relink_all(records, frameworks_dir, collide="prefix", libsystem_shim=None):
             continue
         with open(os.path.join(frameworks_dir, flat), "wb") as f:
             f.write(out)
-        with open(dest, "w", encoding="utf-8", newline="") as f:
-            f.write(STUB_PREFIX + flat)
+        write_stub(dest, flat)
         info["stub_for"] = flat
         warnings = list(summary["warnings"])
         if renamed_from:
@@ -444,6 +471,21 @@ def materialise_symlinks(records, symlink_ok, jb_root):
         dest = s["dest"]
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         entry = {"path": s["path"], "target": s["target"], "package": s["package"]}
+        # follow link chains within the staged tree (max 8 hops)
+        cur, hops = s["path"], 0
+        while hops < 8 and cur in by_path:
+            cur = resolve_link_target(cur, by_path[cur]["target"])
+            hops += 1
+        src = records["files"].get(cur)
+        if src and src.get("stub_for"):
+            # target is a relinked Mach-O: "<link>.lc" with the same stub text, never the binary and
+            # never a real symlink (a symlink named libfoo.dylib would still be a signing candidate)
+            write_stub(dest, src["stub_for"])
+            entry["resolved"] = cur
+            entry["how"] = "stub"
+            entry["stub_for"] = src["stub_for"]
+            results.append(entry)
+            continue
         if symlink_ok:
             if os.path.lexists(dest):
                 os.remove(dest)
@@ -457,20 +499,8 @@ def materialise_symlinks(records, symlink_ok, jb_root):
             entry["how"] = "symlink"
             results.append(entry)
             continue
-        # follow link chains within the staged tree (max 8 hops)
-        cur, hops = s["path"], 0
-        while hops < 8 and cur in by_path:
-            cur = resolve_link_target(cur, by_path[cur]["target"])
-            hops += 1
         entry["resolved"] = cur
-        src = records["files"].get(cur)
-        if src and src.get("stub_for"):
-            # target is a relinked Mach-O: write the same stub text, never the binary
-            with open(dest, "w", encoding="utf-8", newline="") as f:
-                f.write(STUB_PREFIX + src["stub_for"])
-            entry["how"] = "stub"
-            entry["stub_for"] = src["stub_for"]
-        elif src and os.path.isfile(src["dest"]):
+        if src and os.path.isfile(src["dest"]):
             if has_macho_magic(src["dest"]):
                 entry["how"] = "marker-raw-macho"  # target failed to relink; a marker, not a copy
                 with open(dest + ".symlink", "w", encoding="utf-8", newline="\n") as f:
@@ -604,7 +634,7 @@ def main(argv=None):
     with open(os.path.join(args.out, "failures.json"), "w", encoding="utf-8", newline="\n") as f:
         json.dump(failures, f, indent=1)
 
-    # symlinks AFTER relinking: a link to a Mach-O becomes the same @LC stub (stub_for), never a copy
+    # symlinks AFTER relinking: a link to a Mach-O becomes the same "<link>.lc" stub (stub_for), never a copy
     links = materialise_symlinks(records, symlink_ok, jb_root)
     with open(os.path.join(args.out, "symlinks.json"), "w", encoding="utf-8", newline="\n") as f:
         json.dump(links, f, indent=1)
@@ -670,6 +700,10 @@ def main(argv=None):
     log("scan jb/ for Mach-O magic: %d raw Mach-O file(s)%s" % (len(raw), "" if raw else " (OK)"))
     for r in raw:
         log("  RAW  jb/%s" % r)
+    named = scan_dylib_names(jb_root)
+    log("scan jb/ for *.dylib names (stubs are <name>.lc): %d%s" % (len(named), "" if named else " (OK)"))
+    for r in named[:20]:
+        log("  NAME jb/%s" % r)
     if raw and not args.allow_raw_macho:
         log("ERROR: jb/ must contain no Mach-O (every one is relinked into Frameworks/ + stubbed); "
             "pass --allow-raw-macho to override")

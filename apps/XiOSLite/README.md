@@ -51,8 +51,17 @@ LiveContainer や Swift 側は libSystem に直接束縛されたままなので
   - Windows で stage したときの `<path>.symlink` マーカー(リンク先の文字列)は途中の
     ディレクトリ成分も含めて解決する(最大 8 段)。`lstat`/`readlink` はマーカーをシンボリック
     リンクとして報告する
-- `dlopen`: `/var/jb/...` を変換し、中身が `@LC:Frameworks/<flat>` のスタブなら
-  `<bundle>/Frameworks/<flat>` を開く(gdk-pixbuf などのプラグイン用)
+  - relink 済み Mach-O の跡地は `<元の名前>.lc` スタブ(`jb/usr/bin/ls.lc`,
+    `jb/usr/lib/libglib-2.0.0.dylib.lc`、中身は `@LC:Frameworks/<flat>` の 1 行)。元の名前の
+    ファイルは置かない(LiveContainer のインストーラは `*.dylib` や `.app` 内の実行ファイルを
+    名前で拾って署名しようとし、テキストのスタブで「署名できない」一覧を出すため)。
+    ゲストが見る `/var/jb/usr/bin/ls` は、変換先が無く `ls.lc` があればその `.lc` に解決する
+    ので `stat`/`access`/`open`(`test -x`、`which`、bash の PATH 探索)は通る。readdir は
+    偽装していないので `ls /var/jb/usr/bin` の一覧には `ls.lc` の名前で出る
+- `dlopen`: `/var/jb/...` を変換し(`.lc` スタブへの解決込み)、中身が `@LC:Frameworks/<flat>`
+  のスタブなら `<bundle>/Frameworks/<flat>` を開く(gdk-pixbuf などのプラグイン用:
+  `/var/jb/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-svg.so` →
+  `jb/.../libpixbufloader-svg.so.lc` → `Frameworks/libpixbufloader-svg.so`)
 - `execve execv execvp posix_spawn posix_spawnp`: argv をログに出して `ENOSYS`
 - `fork vfork`: ログして `-1 / EAGAIN`(環境変数 `LCSYS_FORK_ERRNO=<番号>` で変更可。
   bash は EAGAIN だと 1,2,4,8,16 秒スリープしながら再試行するので、bash の外部コマンドは
@@ -65,7 +74,7 @@ LiveContainer や Swift 側は libSystem に直接束縛されたままなので
 ## procd(`native/procd.c`)
 
 `lcsys_spawn(path, argv, envp, fd_out, fd_err)`:
-`@LC:` スタブ → `Frameworks/<flat>` を `dlopen(RTLD_LOCAL|RTLD_NOW)` → `_dyld_image_count()` で
+`<path>.lc` スタブ(`@LC:Frameworks/<flat>`)→ `Frameworks/<flat>` を `dlopen(RTLD_LOCAL|RTLD_NOW)` → `_dyld_image_count()` で
 像を探し → ロードコマンドの `LC_MAIN.entryoff` から `entry = header + entryoff` → 8 MB スタックの
 pthread で `optind=1; optreset=1;` の後 `entry(argc, argv, envp, apple)` を呼ぶ。
 戻り値は擬似 pid(1000 から)。`lcsys_wait(pid, &status)` は join。`dlclose` はしない。
@@ -91,9 +100,9 @@ LC_ALL=C SHELL USER=mobile`。
 
 ## G1 関門の読み方(コンソールで確認すること)
 
-1. `lcsys_init -> 0` と `Frameworks/ entries 400+`、`jb/usr/bin/ls stub present true`
+1. `lcsys_init -> 0` と `Frameworks/ entries 400+`、`jb/usr/bin/ls.lc stub present true`
 2. test 1: `pid 1000: /var/jb/usr/bin/ls -> .../Frameworks/ls.exe.dylib (header ..., entryoff 32768 ...)`
-   の後に `ls -la` の一覧(`total`, `@LC:` スタブなので各ファイルは十数バイト)、`exit=0`
+   の後に `ls -la` の一覧(`total`, 実行ファイルは `ls.lc` のような `.lc` 名で十数バイト)、`exit=0`
 3. test 2: `hello from bash` が出ること。パイプライン部分は `fork() -> -1` のログと
    bash のエラーになる(G1 の期待値。何を spawn しようとしたかがログに残る)
 4. test 3: `pkg-config --list-all` が `/var/jb/usr/lib/pkgconfig` の .pc を列挙して `exit=0`
@@ -105,5 +114,5 @@ LC_ALL=C SHELL USER=mobile`。
 `apps/XiOSLite/stage.txt` があるので workflow は先に ubuntu の `stage` ジョブ
 (`tools/xios/stage.py --symlinks never`)を走らせ、artifact `xios-stage` を macOS ジョブに
 渡す。`postbuild.sh` が libLCsys をビルドし、`Frameworks/`(relink 済み 406 本)と `jb/`
-(データ + スタブ)を .app にコピーする。ipa は 100 MB 超。
+(データ + `.lc` スタブ)を .app にコピーする。ipa は 100 MB 超。
 `.\tools\build.ps1 XiOSLite` → SharedFolder → LiveContainer。
