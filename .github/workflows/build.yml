@@ -68,6 +68,15 @@ jobs:
             | tee build.log | grep -E "error:|warning: .*Swift|\*\* BUILD" || true
           test -d "build/Build/Products/Release-iphoneos/${{ matrix.app }}.app"
 
+      - name: Post-build hook (apps/<app>/postbuild.sh)
+        working-directory: apps/${{ matrix.app }}
+        run: |
+          if [ -f postbuild.sh ]; then
+            APP_DIR="$PWD/build/Build/Products/Release-iphoneos/${{ matrix.app }}.app" bash postbuild.sh
+          else
+            echo "no postbuild.sh"
+          fi
+
       - name: Package .ipa
         working-directory: apps/${{ matrix.app }}
         run: |
