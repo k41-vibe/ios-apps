@@ -60,7 +60,7 @@ jobs:
             --sha tools/xios/closure_sha256.txt \
             --cache .deb-cache \
             --out stage \
-            --clean --collide=skip --symlinks never
+            --clean --symlinks never
           du -sh stage/Frameworks stage/jb
       - name: Upload staged tree
         uses: actions/upload-artifact@v4

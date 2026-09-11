@@ -20,6 +20,8 @@
 
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <limits.h>
 #include <mach-o/dyld.h>
 #include <mach-o/loader.h>
@@ -159,6 +161,50 @@ static void free_proc(struct lc_proc *p)
     free(p);
 }
 
+/* Copy <image> to <tmp>/procd/<n>-<basename>; returns 0 and fills out. */
+static int make_private_copy(const char *image, char *out, size_t cap)
+{
+    static int counter = 0;
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    char dir[LCSYS_PATH_MAX];
+    const char *base = strrchr(image, '/');
+    int in, outfd, n;
+    char buf[65536];
+    ssize_t r;
+
+    base = base ? base + 1 : image;
+    snprintf(dir, sizeof dir, "%s/procd", lcsys_cfg.tmp);
+    mkdir(dir, 0700);
+    pthread_mutex_lock(&lock);
+    n = ++counter;
+    pthread_mutex_unlock(&lock);
+    snprintf(out, cap, "%s/%d-%s", dir, n, base);
+
+    in = open(image, O_RDONLY);
+    if (in < 0)
+        return -1;
+    outfd = open(out, O_WRONLY | O_CREAT | O_TRUNC, 0700);
+    if (outfd < 0) {
+        close(in);
+        return -1;
+    }
+    while ((r = read(in, buf, sizeof buf)) > 0) {
+        if (write(outfd, buf, (size_t)r) != r) {
+            close(in);
+            close(outfd);
+            unlink(out);
+            return -1;
+        }
+    }
+    close(in);
+    close(outfd);
+    if (r < 0) {
+        unlink(out);
+        return -1;
+    }
+    return 0;
+}
+
 /* "ls" -> "/var/jb/usr/bin/ls" (first hit that resolves to a readable file) */
 static int locate_guest(const char *path, char *guest, size_t gcap, char *image, size_t icap)
 {
@@ -224,6 +270,17 @@ int lcsys_spawn(const char *path, char *const argv[], char *const envp[], int fd
         errno = ENOENT;
         return -1;
     }
+    /* Fresh static state per "process": dyld returns the same image for the same path, so a
+     * second run of ls would reuse gnulib getopt's static cursor (seen on device: "invalid
+     * option -- '`'"). A private copy under tmp/procd/ has a different inode/path and is
+     * loaded as a new image. The copy keeps its code signature, so it loads in JIT-less mode. */
+    if (!getenv("LCSYS_NO_COPY")) {
+        char priv[LCSYS_PATH_MAX];
+        if (make_private_copy(image, priv, sizeof priv) == 0)
+            snprintf(image, sizeof image, "%s", priv);
+        else
+            lcsys_log("spawn %s: private copy failed (errno %d), using shared image", path, errno);
+    }
     handle = lcsys_real.dlopen(image, RTLD_LOCAL | RTLD_NOW);
     if (!handle) {
         lcsys_log("spawn %s: dlopen(%s) failed: %s", path, image, dlerror());
@@ -236,6 +293,8 @@ int lcsys_spawn(const char *path, char *const argv[], char *const envp[], int fd
         errno = ENOEXEC;
         return -1;
     }
+    if (strstr(image, "/procd/"))
+        unlink(image); /* mapped already; keeps tmp clean even if we never dlclose */
     entry = find_entry(hdr, &entryoff);
     if (!entry) {
         entry = (guest_main_fn)dlsym(handle, "main"); /* fallback: an exported _main */
