@@ -431,8 +431,11 @@ void *dlopen(const char *path, int mode)
     const char *use = path;
     ENSURE();
     if (path && lcsys_ready && path[0] == '/') {
-        /* guest absolute path: map it and turn an @LC: stub into the Frameworks dylib;
-         * a path with no file behind it (shared-cache libs) is passed through */
+        /* guest absolute path: map it (the file may be a "<name>.lc" stub) and turn an
+         * @LC: stub into the Frameworks dylib, e.g. /var/jb/usr/lib/gdk-pixbuf-2.0/2.10.0/
+         * loaders/libpixbufloader-svg.so -> jb/.../libpixbufloader-svg.so.lc -> Frameworks/
+         * libpixbufloader-svg.so; a path with no file behind it (shared-cache libs) is
+         * passed through */
         if (lcsys_resolve_macho(path, buf, sizeof buf))
             use = buf;
     }

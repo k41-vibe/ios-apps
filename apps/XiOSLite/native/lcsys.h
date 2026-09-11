@@ -10,7 +10,7 @@
  * to libSystem directly and is unaffected.
  *
  * Two halves:
- *   pathmap.c  /var/jb/... -> <bundle>/jb/...   (+ .symlink markers, @LC: stubs)
+ *   pathmap.c  /var/jb/... -> <bundle>/jb/...   (+ .symlink markers, "<name>.lc" @LC: stubs)
  *   lcsys.c    the overridden libc entry points + init/logging
  *   procd.c    "processes" as threads: dlopen(flat dylib) + call LC_MAIN entry
  *
@@ -33,6 +33,7 @@ extern "C" {
 
 #define LCSYS_PATH_MAX 1024
 #define LCSYS_STUB_PREFIX "@LC:Frameworks/"
+#define LCSYS_STUB_SUFFIX ".lc" /* stage.py: jb/usr/bin/ls -> jb/usr/bin/ls.lc (text "@LC:Frameworks/ls.exe.dylib") */
 
 /* ---- public API (dlsym'd from Swift) ---- */
 
@@ -47,11 +48,14 @@ void lcsys_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
  * Returns out (always NUL-terminated; truncated silently at cap). */
 char *lcsys_map_path(const char *in, char *out, size_t cap);
 /* Guest path -> host path that exists: map, then follow ".symlink" marker
- * files on any component (up to 8 hops). Falls back to the plain mapping. */
+ * files on any component (up to 8 hops); a missing leaf whose "<leaf>.lc"
+ * stub exists resolves to the stub (so stat/access/open of /var/jb/usr/bin/ls
+ * see jb/usr/bin/ls.lc). Falls back to the plain mapping. */
 char *lcsys_resolve_path(const char *in, char *out, size_t cap);
-/* Guest executable/dylib path -> the file to dlopen. If the resolved file is an
- * "@LC:Frameworks/<flat>" stub, returns <bundle>/Frameworks/<flat>; otherwise
- * the resolved path. Returns NULL (errno set) when the file cannot be read. */
+/* Guest executable/dylib path -> the file to dlopen. Checks <mapped>, then
+ * <mapped>.lc; if the file is an "@LC:Frameworks/<flat>" stub, returns
+ * <bundle>/Frameworks/<flat>; otherwise the resolved path. Returns NULL
+ * (errno set) when neither can be read. */
 char *lcsys_resolve_macho(const char *in, char *out, size_t cap);
 
 /* ---- internal (shared between the .c files) ---- */

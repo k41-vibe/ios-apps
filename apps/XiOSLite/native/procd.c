@@ -205,7 +205,8 @@ static int make_private_copy(const char *image, char *out, size_t cap)
     return 0;
 }
 
-/* "ls" -> "/var/jb/usr/bin/ls" (first hit that resolves to a readable file) */
+/* "ls" -> "/var/jb/usr/bin/ls" (first hit that resolves to a readable file; the
+ * file behind it is the jb/usr/bin/ls.lc stub, lcsys_resolve_macho handles that) */
 static int locate_guest(const char *path, char *guest, size_t gcap, char *image, size_t icap)
 {
     static const char *const dirs[] = { "/var/jb/usr/bin", "/var/jb/usr/local/bin", "/var/jb/bin", NULL };

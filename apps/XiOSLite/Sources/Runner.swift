@@ -154,8 +154,8 @@ final class Runner {
         log.log("lcsys_init -> \(rc); bundle=\(bundle)")
         log.log("home=\(home) tmp=\(tmp)")
         let fw = (try? FileManager.default.contentsOfDirectory(atPath: bundle + "/Frameworks").count) ?? -1
-        let jb = FileManager.default.fileExists(atPath: bundle + "/jb/usr/bin/ls")
-        log.log("Frameworks/ entries \(fw), jb/usr/bin/ls stub present \(jb)")
+        let jb = FileManager.default.fileExists(atPath: bundle + "/jb/usr/bin/ls.lc")
+        log.log("Frameworks/ entries \(fw), jb/usr/bin/ls.lc stub present \(jb)")
         ready = rc == 0
         return ready
     }
