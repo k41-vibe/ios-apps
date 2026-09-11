@@ -1,11 +1,8 @@
 name: build-ipa
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "apps/**"
-      - ".github/workflows/build.yml"
+  # push では動かさない: build.ps1 の workflow_dispatch で指定アプリだけ建てる
+  # (push で全アプリを建てると macOS ランナーの無料枠を食う)
   workflow_dispatch:
     inputs:
       app:
