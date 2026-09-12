@@ -17,6 +17,17 @@
   読まれて失敗し、上流のエラー経路(`g_free(pattern)`、配列の途中)で libmalloc が abort。
   ioscbar が壁紙アイコンを読んだ瞬間にプロセスごと死んでいた。書式を直し、生成物は毎回書き直す
 
+- **dbus が立たない**(`User "???" unknown`)。dbus は `getpwuid_r` ではなく libiosexec の
+  `ie_getpwuid_r`(OpenBSD getpwent.c、`/var/jb/etc/pwd.db` を `dbopen`)を呼んでいて、
+  こちらの `getpwuid_r` 横取りは届いていなかった(ipa 345 本中 295 本が libiosexec 経由)。
+  DB を作る postinst(pwd_mkdb)は走らないので、`dbopen` を横取りして mobile / root の
+  2 件を返す偽 DB にした。`getgrouplist` は主グループ 1 件で答える。stage.py が
+  `jb/etc/{group,shells,passwd}` を置く
+- **AF_UNIX の経路変換**。`bind` / `connect`(+`$NOCANCEL`)を横取りして sun_path を変換する。
+  dbus-daemon の `unix:tmpdir=/var/jb/tmp` と共有バス `/var/jb/tmp/iosc-shell-bus/session-bus`
+  がそのまま bind されていた。変換後が sun_path の 104 バイトを超えるとき(実機の $TMPDIR は
+  88 文字)は `pthread_fchdir_np` でそのスレッドだけ親ディレクトリに移って相対名で開く
+
 ### Removed
 - **`ios-inputd`**。iosc の classic セッションでは要らない: `iosc.c in_dispatch_text()` は
   代理が居なければ自分の text-input-v3 で今選ばれている窓に文字を入れる

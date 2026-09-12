@@ -31,6 +31,9 @@
 #include <unistd.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <stddef.h>
 
 struct lcsys_config lcsys_cfg;
 int lcsys_ready = 0;
@@ -424,6 +427,313 @@ int getpwnam_r(const char *name, struct passwd *pwd, char *buf, size_t cap, stru
 char *getlogin(void)
 {
     return lcsys_passwd()->pw_name;
+}
+
+/* ---------------------------------------------------------------- libiosexec の台帳
+ *
+ * Procursus の libiosexec は LIBIOSEXEC_PREFIXED_ROOT=1 で組まれていて、getpwuid_r ではなく
+ * 自前の ie_getpwuid_r(OpenBSD getpwent.c)を持つ。ipa 345 本中 295 本がそれを呼ぶので
+ * 上の getpwuid 横取りは届かない(dbus は libdbus → ie_getpwuid_r。実機 2026-09-13 も
+ * `User "???" unknown` のままだった)。ie_ 版は /var/jb/etc/pwd.db を dbopen で開く
+ * ハッシュ DB 方式で、それを作る postinst(pwd_mkdb)は走っていないので DB が無い。
+ * libiosexec の読み先は libLCsys なので dbopen を横取りし、pwd.db / spwd.db に対しては
+ * mobile と root の 2 件だけを持つ偽 DB を返す。鍵と値の並びは getpwent.c
+ * (_pwhashbyname / _pwhashbyuid / __hashpw)のとおり。group / shells はテキストなので
+ * stage.py が jb/etc に置く。 */
+
+typedef struct { void *data; size_t size; } lc_dbt;
+typedef struct lc_db {
+    int type;                                   /* DBTYPE(DB_HASH = 1) */
+    int (*close)(struct lc_db *);
+    int (*del)(const struct lc_db *, const lc_dbt *, unsigned);
+    int (*get)(const struct lc_db *, const lc_dbt *, lc_dbt *, unsigned);
+    int (*put)(const struct lc_db *, lc_dbt *, const lc_dbt *, unsigned);
+    int (*seq)(const struct lc_db *, lc_dbt *, lc_dbt *, unsigned);
+    int (*sync)(const struct lc_db *, unsigned);
+    void *internal;
+    int (*fd)(const struct lc_db *);
+} lc_db;
+
+struct lc_pwrec { const char *name, *gecos, *dir, *shell; unsigned uid, gid; };
+struct lc_pwdb { char buf[512]; };
+
+static const struct lc_pwrec *lc_pw_table(int *count)
+{
+    static struct lc_pwrec t[2];
+    static int ready;
+    if (!ready) {
+        struct passwd *me = lcsys_passwd();
+        t[0].name = me->pw_name; t[0].gecos = me->pw_gecos; t[0].dir = me->pw_dir; t[0].shell = me->pw_shell;
+        t[0].uid = (unsigned)me->pw_uid; t[0].gid = (unsigned)me->pw_gid;
+        t[1].name = "root"; t[1].gecos = "System Administrator"; t[1].dir = "/var/root";
+        t[1].shell = "/var/jb/usr/bin/bash"; t[1].uid = 0; t[1].gid = 0;
+        ready = 1;
+    }
+    *count = 2;
+    return t;
+}
+
+/* name\0 passwd\0 uid(int) gid(int) change(time_t) class\0 gecos\0 dir\0 shell\0 expire(time_t) */
+static size_t lc_pw_pack(const struct lc_pwrec *r, char *out, size_t cap)
+{
+    char *p = out;
+    int i;
+    long long t = 0;
+#define LC_PUTS(s) do { size_t n_ = strlen(s) + 1; if ((size_t)(p - out) + n_ > cap) return 0; memcpy(p, (s), n_); p += n_; } while (0)
+#define LC_PUTB(v, n) do { if ((size_t)(p - out) + (n) > cap) return 0; memcpy(p, (v), (n)); p += (n); } while (0)
+    LC_PUTS(r->name);
+    LC_PUTS("*");
+    i = (int)r->uid; LC_PUTB(&i, sizeof i);
+    i = (int)r->gid; LC_PUTB(&i, sizeof i);
+    LC_PUTB(&t, sizeof t);
+    LC_PUTS("");
+    LC_PUTS(r->gecos);
+    LC_PUTS(r->dir);
+    LC_PUTS(r->shell);
+    LC_PUTB(&t, sizeof t);
+#undef LC_PUTS
+#undef LC_PUTB
+    return (size_t)(p - out);
+}
+
+static int lc_pwdb_get(const lc_db *db, const lc_dbt *key, lc_dbt *data, unsigned flags)
+{
+    struct lc_pwdb *st = db->internal;
+    const unsigned char *k = key ? key->data : NULL;
+    const struct lc_pwrec *t, *r = NULL;
+    int n, i;
+    size_t len;
+    (void)flags;
+    if (!k || key->size < 1)
+        return 1;
+    t = lc_pw_table(&n);
+    if (k[0] == '1') {                                                  /* _PW_KEYBYNAME */
+        for (i = 0; i < n; i++)
+            if (strlen(t[i].name) == key->size - 1 && memcmp(t[i].name, k + 1, key->size - 1) == 0)
+                r = &t[i];
+    } else if (k[0] == '3' && key->size == 1 + sizeof(unsigned)) {     /* _PW_KEYBYUID */
+        unsigned u;
+        memcpy(&u, k + 1, sizeof u);
+        for (i = 0; i < n; i++)
+            if (t[i].uid == u)
+                r = &t[i];
+    } else if (k[0] == '2' && key->size == 1 + sizeof(int)) {          /* _PW_KEYBYNUM(1 始まり) */
+        int num;
+        memcpy(&num, k + 1, sizeof num);
+        if (num >= 1 && num <= n)
+            r = &t[num - 1];
+    }
+    if (!r)
+        return 1;
+    len = lc_pw_pack(r, st->buf, sizeof st->buf);
+    if (!len)
+        return -1;
+    data->data = st->buf;
+    data->size = len;
+    return 0;
+}
+static int lc_pwdb_close(lc_db *db) { free(db->internal); free(db); return 0; }
+static int lc_pwdb_del(const lc_db *db, const lc_dbt *k, unsigned f) { (void)db; (void)k; (void)f; errno = EPERM; return -1; }
+static int lc_pwdb_put(const lc_db *db, lc_dbt *k, const lc_dbt *d, unsigned f) { (void)db; (void)k; (void)d; (void)f; errno = EPERM; return -1; }
+static int lc_pwdb_seq(const lc_db *db, lc_dbt *k, lc_dbt *d, unsigned f) { (void)db; (void)k; (void)d; (void)f; return 1; }
+static int lc_pwdb_sync(const lc_db *db, unsigned f) { (void)db; (void)f; return 0; }
+static int lc_pwdb_fd(const lc_db *db) { (void)db; errno = ENOENT; return -1; }
+
+static lc_db *lc_pwdb_open(void)
+{
+    lc_db *db = calloc(1, sizeof *db);
+    struct lc_pwdb *st = calloc(1, sizeof *st);
+    if (!db || !st) {
+        free(db);
+        free(st);
+        errno = ENOMEM;
+        return NULL;
+    }
+    db->type = 1;
+    db->close = lc_pwdb_close;
+    db->del = lc_pwdb_del;
+    db->get = lc_pwdb_get;
+    db->put = lc_pwdb_put;
+    db->seq = lc_pwdb_seq;
+    db->sync = lc_pwdb_sync;
+    db->internal = st;
+    db->fd = lc_pwdb_fd;
+    return db;
+}
+
+static int lc_suffix(const char *s, const char *suf)
+{
+    size_t a = strlen(s), b = strlen(suf);
+    return a >= b && strcmp(s + a - b, suf) == 0;
+}
+
+void *dbopen(const char *file, int flags, int mode, int type, const void *openinfo)
+{
+    static void *(*real)(const char *, int, int, int, const void *);
+    static int logged;
+    if (file && (lc_suffix(file, "/etc/pwd.db") || lc_suffix(file, "/etc/spwd.db"))) {
+        if (!logged) {
+            logged = 1;
+            lcsys_log("dbopen(%s): 偽の passwd 台帳(mobile / root)を返す", file);
+        }
+        return lc_pwdb_open();
+    }
+    if (!real)
+        real = (void *(*)(const char *, int, int, int, const void *))find_real("dbopen");
+    if (!real) {
+        errno = ENOENT;
+        return NULL;
+    }
+    return real(file, flags, mode, type, openinfo);
+}
+
+/* dbus は passwd の後に getgrouplist で所属グループを引く。iOS の本物は membership
+ * (OpenDirectory)経由で、サンドボックスの中から引けるかは分からない。主グループ 1 件で答える。 */
+int getgrouplist(const char *name, int basegid, int *groups, int *ngroups)
+{
+    (void)name;
+    if (!groups || !ngroups) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (*ngroups < 1) {
+        *ngroups = 1;
+        return -1;
+    }
+    groups[0] = basegid;
+    *ngroups = 1;
+    return 0;
+}
+
+/* ---------------------------------------------------------------- AF_UNIX のパス
+ *
+ * bind / connect はこれまで横取りしていなかった(iosc の wayland ソケットはホストの実パスを
+ * 渡していたので通っていた)。dbus-daemon は session.conf の unix:tmpdir=/var/jb/tmp や
+ * シェルの /var/jb/tmp/iosc-shell-bus/session-bus をそのまま bind するので経路変換が要る。
+ * さらに変換後は $TMPDIR(実機 88 文字)の下になり、sun_path の 104 バイトを超える
+ * (…/tmp/iosc-shell-bus/session-bus で 116)。長いときは、そのスレッドだけの作業
+ * ディレクトリ(pthread_fchdir_np、libsystem_pthread が公開している)を親ディレクトリに
+ * 向けて相対名で bind / connect し、終わったら戻す。プロセス全体の cwd は触らない。 */
+
+static int lc_thread_fchdir(int fd)
+{
+    static int (*fn)(int);
+    static int ready;
+    if (!ready) {
+        fn = (int (*)(int))dlsym(RTLD_DEFAULT, "pthread_fchdir_np");
+        ready = 1;
+        if (!fn)
+            lcsys_log("WARNING: pthread_fchdir_np が無い。sun_path に収まらない AF_UNIX パスは通せない");
+    }
+    return fn ? fn(fd) : -1;
+}
+
+typedef int (*lc_sockop)(int, const struct sockaddr *, socklen_t);
+
+static int lc_unix_sockop(lc_sockop op, const char *what, int fd, const struct sockaddr *sa, socklen_t len)
+{
+    static int (*real_close)(int);
+    const struct sockaddr_un *in = (const struct sockaddr_un *)sa;
+    struct sockaddr_un out;
+    char guest[LCSYS_PATH_MAX], host[LCSYS_PATH_MAX];
+    size_t plen, maxlen = sizeof out.sun_path - 1;
+    const char *use;
+    int dirfd = -1, r, saved;
+
+    /* sun_path は NUL 終端されていないことがある(長さは sun_len / len が持つ) */
+    plen = len > offsetof(struct sockaddr_un, sun_path) ? len - offsetof(struct sockaddr_un, sun_path) : 0;
+    if (plen > sizeof in->sun_path)
+        plen = sizeof in->sun_path;
+    plen = strnlen(in->sun_path, plen);
+    if (plen == 0 || in->sun_path[0] != '/' || plen >= sizeof guest)
+        return op(fd, sa, len);
+    memcpy(guest, in->sun_path, plen);
+    guest[plen] = '\0';
+    lcsys_map_path(guest, host, sizeof host);
+    use = host;
+    if (strlen(host) > maxlen) {
+        char *slash = strrchr(host, '/');
+        if (!slash || slash == host) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        *slash = '\0';
+        dirfd = open(host, O_RDONLY | O_DIRECTORY);
+        if (dirfd < 0) {
+            saved = errno;
+            lcsys_log("%s(%s): 親 %s が開けない errno %d", what, guest, host, saved);
+            errno = saved;
+            return -1;
+        }
+        if (lc_thread_fchdir(dirfd) != 0) {
+            saved = errno;
+            if (!real_close)
+                real_close = (int (*)(int))find_real("close");
+            if (real_close)
+                real_close(dirfd);
+            errno = saved ? saved : ENAMETOOLONG;
+            return -1;
+        }
+        use = slash + 1;
+    }
+    memset(&out, 0, sizeof out);
+    out.sun_family = AF_UNIX;
+    snprintf(out.sun_path, sizeof out.sun_path, "%s", use);
+    out.sun_len = (unsigned char)(offsetof(struct sockaddr_un, sun_path) + strlen(use) + 1);
+    r = op(fd, (const struct sockaddr *)&out, (socklen_t)out.sun_len);
+    saved = errno;
+    if (dirfd >= 0) {
+        lc_thread_fchdir(-1);
+        if (!real_close)
+            real_close = (int (*)(int))find_real("close");
+        if (real_close)
+            real_close(dirfd);   /* fork の子でも本当に閉じる(自分で開いた fd) */
+    }
+    if (lcsys_cfg.trace || r != 0)
+        lcsys_log("%s(%s) -> %s%s = %d errno %d", what, guest, dirfd >= 0 ? "<親>/" : "", use, r, saved);
+    errno = saved;
+    return r;
+}
+
+int bind(int fd, const struct sockaddr *sa, socklen_t len)
+{
+    static lc_sockop real;
+    if (!real)
+        real = (lc_sockop)find_real("bind");
+    if (!real) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (!lcsys_ready || !sa || sa->sa_family != AF_UNIX)
+        return real(fd, sa, len);
+    return lc_unix_sockop(real, "bind", fd, sa, len);
+}
+
+static int lc_connect_impl(int fd, const struct sockaddr *sa, socklen_t len)
+{
+    static lc_sockop real;
+    if (!real)
+        real = (lc_sockop)find_real("connect");
+    if (!real) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (!lcsys_ready || !sa || sa->sa_family != AF_UNIX)
+        return real(fd, sa, len);
+    return lc_unix_sockop(real, "connect", fd, sa, len);
+}
+
+/* connect も close と同じく `$NOCANCEL` の別名がある(audit_aliases.py が見張る) */
+int lc_connect_plain(int, const struct sockaddr *, socklen_t) __asm__("_connect");
+int lc_connect_plain(int fd, const struct sockaddr *sa, socklen_t len)
+{
+    return lc_connect_impl(fd, sa, len);
+}
+
+int lc_connect_nocancel(int, const struct sockaddr *, socklen_t) __asm__("_connect$NOCANCEL");
+int lc_connect_nocancel(int fd, const struct sockaddr *sa, socklen_t len)
+{
+    return lc_connect_impl(fd, sa, len);
 }
 
 /* statfs/statvfs: ioscbg のデスクトップ部品(Storage)が空き容量をこれで読む。
