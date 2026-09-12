@@ -254,7 +254,7 @@ int dup2(int oldfd, int newfd)
     return real ? real(oldfd, newfd) : -1;
 }
 
-int close(int fd)
+static int lc_close_impl(int fd)
 {
     static int (*real)(int);
     if (fd >= 0 && fd <= 2 && lcsys_is_guest_thread()) {
@@ -264,6 +264,21 @@ int close(int fd)
     if (!real)
         real = (int (*)(int))find_real("close");
     return real ? real(fd) : -1;
+}
+
+/* close も名前が 2 つある。`$NOCANCEL` は「スレッドの取り消し点にしない」版で、
+ * glib はこちらを呼ぶ。片方だけ定義すると素通りする(ビルド時の
+ * tools/xios/audit_aliases.py が検出した)。 */
+int lc_close_plain(int) __asm__("_close");
+int lc_close_plain(int fd)
+{
+    return lc_close_impl(fd);
+}
+
+int lc_close_nocancel(int) __asm__("_close$NOCANCEL");
+int lc_close_nocancel(int fd)
+{
+    return lc_close_impl(fd);
 }
 
 int stat(const char *path, struct stat *st)
