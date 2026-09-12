@@ -144,6 +144,38 @@ int lcsys_fork_child(void (*fn)(void *), void *arg)
     return p->pid;
 }
 
+/* exec の肩代わり: 新しいプログラムをスレッドとして起こし、**呼んだ側の擬似 pid を
+ * そちらに引き継ぐ**。exec は「同じプロセスのまま中身が別のプログラムになる」操作なので、
+ * 親が待っている pid が新しいプログラムを指していないと waitpid の意味が合わなくなる。
+ * 成功したら呼んだ側は自分のスレッドを終えること(戻ってはいけない)。 */
+int lcsys_exec_handover(const char *path, char *const argv[], char *const envp[])
+{
+    struct lc_proc *cur, *np;
+    int newpid, tmp;
+
+    pthread_once(&key_once, make_key);
+    cur = (struct lc_proc *)pthread_getspecific(guest_key);
+    newpid = lcsys_spawn(path, argv, envp, -1, -1);
+    if (newpid < 0)
+        return -1;
+    if (!cur)
+        return newpid;
+
+    /* 番号を入れ替える。親が待っている番号が新しいプログラムに付く */
+    pthread_mutex_lock(&procs_lock);
+    for (np = procs; np; np = np->next)
+        if (np->pid == newpid)
+            break;
+    if (np) {
+        tmp = cur->pid;
+        cur->pid = np->pid;
+        np->pid = tmp;
+    }
+    pthread_mutex_unlock(&procs_lock);
+    lcsys_log("exec: pid %d を引き継いだ(抜け殻は %d)", np ? np->pid : newpid, cur->pid);
+    return np ? np->pid : newpid;
+}
+
 /* ------------------------------------------------------ exit hook */
 
 int lcsys_guest_exit(int status)

@@ -59,6 +59,11 @@ int lcsys_is_guest_thread(void);
 /* fork() の子として、procd の台帳に載ったスレッドを 1 本立てる。
  * fn は複製したスタックへ飛ぶので普通は戻ってこない。返り値は擬似 pid。 */
 int lcsys_fork_child(void (*fn)(void *), void *arg);
+
+/* exec の肩代わり。新しいプログラムをスレッドで起こし、呼んだ側の擬似 pid を
+ * そちらへ引き継ぐ。成功したら呼んだ側は自分のスレッドを終えること。
+ * 見つからなければ -1(次の候補を試させるため)。 */
+int lcsys_exec_handover(const char *path, char *const argv[], char *const envp[]);
 int lcsys_init(const char *bundle_path, const char *home, const char *tmp, int log_fd);
 void lcsys_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 /* xpcshim.m: replace the com.max.xios.metal-event-broker XPC service (a root

@@ -18,6 +18,7 @@
  */
 #include "lcsys.h"
 
+#include <crt_externs.h>   /* environ は iOS では _NSGetEnviron() 経由 */
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -541,26 +542,45 @@ static void log_argv(const char *what, const char *path, char *const argv[])
     lcsys_log("%s(%s) argv=[%s] -> ENOSYS (G1: no exec)", what, path ? path : "(null)", line);
 }
 
+/* exec は「同じプロセスのまま中身が別のプログラムになる」操作で、成功したら戻らない。
+ * こちらでは「新しいプログラムをスレッドとして起こし、呼んだ側のスレッドを終える」で
+ * 置き換える。呼んだ側が fork の子(= 化けるためだけに居る)なら、これがそのまま
+ * 正しい意味になる。擬似 pid は新しい方へ引き継ぐので、親の waitpid も合う。
+ *
+ * 見つからなければ -1 を返して呼び出し元に次の候補を試させる
+ * (libiosexec の ie_execl は PATH の候補を順に試す)。 */
+static int exec_here(const char *what, const char *path, char *const argv[], char *const envp[])
+{
+    int pid;
+    log_argv(what, path, argv);
+    if (!lcsys_is_guest_thread()) {
+        lcsys_log("%s: ゲストのスレッドではないので断る", what);
+        errno = ENOSYS;
+        return -1;
+    }
+    pid = lcsys_exec_handover(path, argv, envp ? envp : *_NSGetEnviron());
+    if (pid < 0) {
+        errno = ENOENT;
+        return -1;
+    }
+    lcsys_guest_exit(0); /* 戻らない: このスレッドはここで終わる */
+    errno = ENOSYS;      /* 念のため(guest_exit が戻るのはホストのスレッドだけ) */
+    return -1;
+}
+
 int execve(const char *path, char *const argv[], char *const envp[])
 {
-    (void)envp;
-    log_argv("execve", path, argv);
-    errno = ENOSYS;
-    return -1;
+    return exec_here("execve", path, argv, envp);
 }
 
 int execv(const char *path, char *const argv[])
 {
-    log_argv("execv", path, argv);
-    errno = ENOSYS;
-    return -1;
+    return exec_here("execv", path, argv, NULL);
 }
 
 int execvp(const char *file, char *const argv[])
 {
-    log_argv("execvp", file, argv);
-    errno = ENOSYS;
-    return -1;
+    return exec_here("execvp", file, argv, NULL);
 }
 
 /* posix_spawn は fork と違って「1 回呼んで 1 回返る」ので、スレッドで代われる。
