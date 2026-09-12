@@ -51,6 +51,7 @@ https://repo.maxleiter.com/debs/libgtk-4-1_4.14.5+wl1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libgtkintl_1.1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libgtksourceview-5-0_5.12.1+ios1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libharfbuzz0b_10.2.0+ios2_iphoneos-arm64.deb
+https://repo.maxleiter.com/debs/libicu74_74.2+ios1_iphoneos-arm64.deb
 https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/gettext/libintl-dev_0.22_iphoneos-arm64.deb
 https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/gettext/libintl8_0.22_iphoneos-arm64.deb
 https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/libiosexec/libiosexec1_1.3.1_iphoneos-arm64.deb

@@ -29,6 +29,7 @@ SEEDS = ["iosc", "iosc-shell", "foot", "bash", "coreutils",
          "libintl-dev",                  # unversioned libintl.dylib <- librsvg-2 / libpixbufloader-svg; only libintl-dev ships it
          # 2026-09-12 追加。中身のあるアプリを 1 本入れるための種:
          "xios-fonts-noto",   # フォントが 1 つも入っていなかった。ドックが頭文字しか描けないのもこれ
+         "libicu74",                  # libicuuc.74.dylib を @rpath で要求するものが Depends に書いていない(stage.py の関門で発覚 2026-09-13)
          "gsettings-desktop-schemas", # org.gnome.desktop.* のスキーマ。libadwaita/GTK4 が g_settings_new で参照し、無いと abort する
          "gnome-text-editor", # GTK4 のテキストエディタ。打った文字が出る窓(GTK4 本体は nautilus 経由で既に入っている)
          "mesa-demos",        # Wayland の OpenGL 実演。動く絵が出るかを一発で見る
