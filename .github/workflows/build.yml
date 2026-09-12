@@ -193,59 +193,39 @@ jobs:
           if-no-files-found: error
 
       # ---- ここから下はタグ push(リリース)のときだけ ----
-      # 版ごとに分ける(資産名が <App>-vX.Y.Z.ipa)と、1 か所にまとめる(リリースはアプリごとに 1 つ)の両立。
-      # 版そのものを指すのは git タグ <app>-vX.Y.Z のほう(ソースを永久に辿れる)。
-      - name: Publish (アプリごとに 1 リリース、資産は版ごと)
+      # kioku と同じ: 1 版 = 1 リリース。タグ <app>-vX.Y.Z、名前 "<App> vX.Y.Z"、資産は <App>.ipa 固定。
+      # 版はリリース名とタグで示し、どの版が入っているかは LiveContainer の一覧とアプリ画面で分かる。
+      - name: Release notes (CHANGELOG の該当節 + sha256)
         if: needs.list.outputs.release != ''
         working-directory: apps/${{ matrix.app }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          APP: ${{ matrix.app }}
-          VER: ${{ needs.list.outputs.release }}
-          BUILD: ${{ steps.ver.outputs.build }}
-          SHA: ${{ steps.ver.outputs.sha }}
-          KEEP: "6"
         run: |
           set -euo pipefail
-          tag=$(echo "$APP" | tr 'A-Z' 'a-z')
-          asset="$APP-v$VER.ipa"
-          cp "$APP.ipa" "$asset"
-          sha256=$(shasum -a 256 "$asset" | cut -d' ' -f1)
-
-          # この版の節(CHANGELOG から抜く)
+          ver="${{ needs.list.outputs.release }}"
+          sha256=$(shasum -a 256 "${{ matrix.app }}.ipa" | cut -d' ' -f1)
+          repo="${{ github.repository }}"
           {
-            echo "### v$VER — $(date -u +%Y-%m-%d) — \`$asset\`"
+            echo "## ${{ matrix.app }} v$ver"
             echo
             if [ -f CHANGELOG.md ]; then
-              awk -v v="$VER" '$0 ~ "^## \\[" v "\\]" { on=1; next } on && /^## \[/ { on=0 } on { print }' CHANGELOG.md
+              awk -v v="$ver" '$0 ~ "^## \\[" v "\\]" { on=1; next } on && /^## \[/ { on=0 } on { print }' CHANGELOG.md
             fi
-            echo "- SHA-256: \`$sha256\`  /  build $BUILD  /  commit \`$SHA\`"
-            echo "- source: https://github.com/${{ github.repository }}/tree/${{ github.ref_name }}"
             echo
-          } > section.md
+            echo "未署名の .ipa。LiveContainer で取り込むと自分の証明書で署名し直される。"
+            echo "取り込むとアプリ画面と LiveContainer の一覧に \`v$ver (build ${{ steps.ver.outputs.build }}) ${{ steps.ver.outputs.sha }}\` と出る。"
+            echo "変更点は [CHANGELOG](https://github.com/$repo/blob/main/apps/${{ matrix.app }}/CHANGELOG.md)、"
+            echo "版の決まりは [docs/VERSIONING.md](https://github.com/$repo/blob/main/docs/VERSIONING.md)。"
+            echo
+            echo "- \`${{ matrix.app }}.ipa\` SHA-256: \`$sha256\`"
+          } > release-notes.md
+          cat release-notes.md
 
-          if ! gh release view "$tag" >/dev/null 2>&1; then
-            printf '%s\n' \
-              "$APP のリリース置き場。資産は版ごと(\`$APP-vX.Y.Z.ipa\`)、新しいものが上。" \
-              "" \
-              "未署名の .ipa。LiveContainer で取り込むと自分の証明書で署名し直される。" \
-              "取り込んだ版は LiveContainer の一覧とアプリ画面に \`vX.Y.Z (build N) <commit>\` と出る。" \
-              "版の決まりは [docs/VERSIONING.md](https://github.com/${{ github.repository }}/blob/main/docs/VERSIONING.md)。" \
-              "" > head.md
-            gh release create "$tag" --title "$APP" --notes-file head.md
-          fi
-
-          # 今回の節を先頭に足す(新しい版が上、説明の定型文は末尾に残る)
-          gh release view "$tag" --json body --jq .body > body.md
-          cat section.md body.md > newbody.md
-          gh release edit "$tag" --notes-file newbody.md
-
-          gh release upload "$tag" "$asset" --clobber
-          echo "published $asset -> $tag"
-
-          # 古い資産を掃除(1 つ 100MB 級なので KEEP 個まで)
-          gh release view "$tag" --json assets --jq '.assets | sort_by(.updatedAt) | reverse | .[].name' > assets.txt
-          tail -n +$((KEEP + 1)) assets.txt | while read -r old; do
-            [ -n "$old" ] && gh release delete-asset "$tag" "$old" --yes && echo "pruned $old"
-          done
-          rm -f section.md head.md body.md newbody.md assets.txt "$asset"
+      - name: Publish Release
+        if: needs.list.outputs.release != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ matrix.app }} v${{ needs.list.outputs.release }}
+          draft: false
+          prerelease: false
+          files: apps/${{ matrix.app }}/${{ matrix.app }}.ipa
+          body_path: apps/${{ matrix.app }}/release-notes.md
