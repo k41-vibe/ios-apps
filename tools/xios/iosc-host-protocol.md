@@ -93,7 +93,9 @@ typedef struct {
 
 **全ステップがそのまま動き、権限を要求するものは 1 つも無い。**
 
-- `task_for_pid(mach_task_self(), getpid())` は自分の task port。`task_for_pid-allow` は不要
+- ~~`task_for_pid(mach_task_self(), getpid())` は自分の task port。`task_for_pid-allow` は不要~~
+  **誤り(実機 2026-09-12)**: iOS では自分の pid に対しても `KERN_FAILURE (0x5)` になる。
+  `xsurface.c` が `task_for_pid` を横取りし、自分の pid なら `mach_task_self()` を返している
 - `mach_port_extract_right` は自分の空間内なので単なる `COPY_SEND` の複製
 - 同一プロセスの AF_UNIX 対では `LOCAL_PEERPID` が自分の pid を返すので、サーバーの検査も通る
 - `IOSurfaceCreateMachPort` → `IOSurfaceLookupFromMachPort` は同一 task で同じ面を返す
@@ -204,7 +206,7 @@ DIRTY 1 回につき RELEASED 1 回。`xsurface_drain` は 1 フレーム分で�
 
 ## 6. 入力ソケット(`-input-sock`)
 
-同じ 32 バイトレコード。別名は `a=x, b=y, c=code, window_id=state, d=mods, length=ペイロード長`
+同じ 32 バイトレコード(`wayland/xios_input_socket.c:33 sizeof(xios_msg)`。xiOS の文書に残る「24 バイト」は古い)。別名は `a=x, b=y, c=code, window_id=state, d=mods, length=ペイロード長`
 (`XiosProtocol.h:138-141`)。
 
 **双方向に HELLO が必要**。サーバーは accept 直後に送り(`xios_input_socket.c:155-159, 244`)、

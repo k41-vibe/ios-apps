@@ -59,7 +59,6 @@ struct ContentView: View {
             log.log(Runner.measureScreen())
             log.log(prev.isEmpty ? "--- first launch ---"
                                  : "--- launch (previous log \(prev.split(separator: "\n").count) lines) ---")
-            runTests()
         }
     }
 
@@ -115,7 +114,6 @@ struct ContentView: View {
             }
             HStack {
                 Button("歯車") { run { $0.startGears() } }.buttonStyle(.bordered).disabled(busy)
-                Button("dbus") { run { $0.startDbus() } }.buttonStyle(.bordered).disabled(busy)
                 Button("エディタ") { run { $0.startEditor() } }.buttonStyle(.borderedProminent).disabled(busy)
                 Spacer()
                 }
@@ -240,7 +238,6 @@ struct ContentView: View {
             // 入力は画面と別のソケット。繋がらなくても画面は出るので、失敗しても進む
             client.xin = XInputAPI(handle: handle, log: l)
             client.connectInput(path: r.inputPath())
-            client.connectText(path: r.textPath())
             DispatchQueue.main.async {
                 screen = client
                 mode = .screen

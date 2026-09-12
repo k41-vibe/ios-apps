@@ -8,6 +8,56 @@
 
 ## [Unreleased]
 
+`docs/review-2026-09-13.md`(xiOS のソースと設計文書との照合)に基づく一括の見直し。
+
+### Removed
+- **`ios-inputd`**。iosc の classic セッションでは要らない: `iosc.c in_dispatch_text()` は
+  代理が居なければ自分の text-input-v3 で今選ばれている窓に文字を入れる
+  (`improxy=0 (local fallback)` はその「いつもの道」)。ios-inputd は KWin などを入れ子に
+  したときだけの橋渡し。文字も指も iosc の入力ソケットに直結に戻した
+- 自前の `dbus-daemon` ボタン。バスはシェルが `<jbroot>/tmp/iosc-shell-bus` に 1 本立てる設計
+- `XDG_RUNTIME_DIR` 差し替え対策のシンボリックリンク。`xios-session-lib.sh:1236` と同じく
+  **`WAYLAND_DISPLAY` を絶対パスで渡す**ようにしたので要らない
+- ロケールの探索(結果は "C" だった)。`LC_CTYPE=UTF-8` の 1 行に置き換え
+  (foot の iOS パッチ 0001、wayland-apps.md、`sd_launch` の 3 箇所が一致)。`LANG`/`LC_ALL` は設定しない
+- 起動のたびの G1 テスト(ボタンからだけ)
+- `apps/XiOSLite`(置き換え済みの旧版 3530 行。`stage.txt` が残っていて全部ビルドが重かった)
+- 閉包の種 `nautilus`(15 パッケージ 26MB を引き込み、tracker が要るので今は動かない)。
+  124 → 111 パッケージ
+
+### Added
+- **`waitpid` / `wait` / `wait4` / `kill` の横取り**。擬似 pid(1000 以上)は procd の台帳で
+  受け、本物には流さない。`dbus-run-session` は子を `waitpid` で待つので、これが無いと
+  `ECHILD` で転ぶ。fork の子(detached)は join できないので `done` を見て待つ
+- **初回起動で postinst 相当を実行**。ipa は読み取り専用なので、書ける場所に生成して
+  環境変数で指す: `glib-compile-schemas --targetdir=<home>/glib-schemas`(`GSETTINGS_SCHEMA_DIR`)、
+  `loaders.cache`(`GDK_PIXBUF_MODULE_FILE`。積んでいるローダーは SVG の 1 本)、
+  `fc-cache -f`(`XDG_CACHE_HOME`)。これが無いと GTK4 のアプリは `g_settings_new` で abort し、
+  SVG のアイコンは描けない(ドックが頭文字だった一因)
+- **`execve` / `posix_spawn` がスクリプトに `ENOEXEC` を返す**。libiosexec の `ie_execve` は
+  `EPERM/ENOEXEC` のときだけ `#!` を読んで `sh script` に書き換える(`execv.c:23-47`)ので、
+  `ENOENT` のままではシェルスクリプトが一切動かなかった
+- **TRAITS で自動キーボード**(osk-plan.md)。コンポジタが「文字を受け取る欄が選ばれた/外れた」を
+  教えてくるので、enable で出し、disable は 0.2 秒待って下げる。使う人が自分で下げたものは
+  その欄を離れるまで自動では出さない。Tab を `KEY 0xff09` で送るようにした
+- **PACING**(`xs_pacing`)。表示の時計をコンポジタに渡し、`pacing=event-loop` から vblank へ
+- 種に `gsettings-desktop-schemas`(libadwaita/GTK4 が `org.gnome.desktop.*` を参照する)
+- `tools/xios/audit_symbols.py` をビルドの関門に繋いだ(G0 で libpcre2 の欠陥を見つけた検査)
+
+### Changed
+- **論理画面を 864 幅に固定し、縮小して映す**。xiOS のシェルは幅 1440 を基準に描き、縮尺を
+  0.6〜2.5 に収める(`iosc-shell.c pl_ui`)。393 幅では 0.6 に切り上げられ「864 幅のつもり」で
+  描いた帯の右が切れていた。xiOS 自身も iPad で 1440 論理を 2160 パネルに縮小している
+  (xios-app.md "Render Scale")。`-scale 2`、`IOSC_PANEL_SCALE=2`。タッチの逆変換は
+  ビューポート基準なのでそのまま
+- 「エディタ」は `dbus-run-session -- gnome-text-editor` で起こす(run-kgx.sh と同じ形)
+- `posix_spawnp` は `getenv("PATH")` を順に探す(libiosexec の `ie_posix_spawnp` と同じ)
+- `xinput.c` に `SO_NOSIGPIPE`(IoscInput.c と同じ)
+- `XDG_DATA_DIRS` に `/var/jb/usr/local/share` を足した(iosc-shell のアイコン探索先)
+- ドックの部品の配置は初回だけ書く(ioscbg が動かした位置を書き戻すので、毎回上書きすると消える)
+- セッション開始は run-shell.sh と同じ順(壁紙 → 0.3 秒 → 帯 → ドック)
+- 文書の誤りを直した(`task_for_pid` は自分自身でも失敗する / 記録は 32 バイト)
+
 ## [0.2.6] - 2026-09-12
 
 ### Fixed

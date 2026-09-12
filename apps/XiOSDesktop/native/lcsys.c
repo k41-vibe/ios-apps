@@ -29,6 +29,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
 
 struct lcsys_config lcsys_cfg;
 int lcsys_ready = 0;
@@ -667,10 +669,8 @@ static int exec_here(const char *what, const char *path, char *const argv[], cha
         return -1;
     }
     pid = lcsys_exec_handover(path, argv, envp ? envp : *_NSGetEnviron());
-    if (pid < 0) {
-        errno = ENOENT;
-        return -1;
-    }
+    if (pid < 0)
+        return -1;   /* errno は lcsys_spawn のまま: ENOEXEC(スクリプト)か ENOENT */
     lcsys_guest_exit(0); /* 戻らない: このスレッドはここで終わる */
     errno = ENOSYS;      /* 念のため(guest_exit が戻るのはホストのスレッドだけ) */
     return -1;
@@ -705,8 +705,9 @@ static int spawn_via_procd(const char *what, pid_t *pid, const char *path,
     log_argv(what, path, argv);
     p = lcsys_spawn(path, argv, envp, -1, -1);
     if (p < 0) {
-        lcsys_log("%s: %s を起こせなかった", what, path ? path : "(null)");
-        return ENOENT;
+        int saved = errno;
+        lcsys_log("%s: %s を起こせなかった (errno %d)", what, path ? path : "(null)", saved);
+        return saved == ENOEXEC ? ENOEXEC : ENOENT;   /* ie_posix_spawn は ENOEXEC で #! を読む */
     }
     if (pid)
         *pid = (pid_t)p;
@@ -725,15 +726,16 @@ int posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_actions_t 
                  const posix_spawnattr_t *attrp, char *const argv[], char *const envp[])
 {
     (void)file_actions; (void)attrp;
-    /* p つきは PATH から探す。procd の解決は絶対パス前提なので、ここで足す */
+    /* p つきは PATH から探す(libiosexec の ie_posix_spawnp と同じ: getenv("PATH") を順に) */
     if (file && !strchr(file, '/')) {
-        static const char *dirs[] = {"/var/jb/usr/local/bin/", "/var/jb/usr/bin/", "/var/jb/bin/"};
-        char full[LCSYS_PATH_MAX];
-        size_t i;
-        for (i = 0; i < sizeof dirs / sizeof dirs[0]; i++) {
-            if (snprintf(full, sizeof full, "%s%s", dirs[i], file) >= (int)sizeof full)
+        const char *path_env = getenv("PATH");
+        char dirs[LCSYS_PATH_MAX], full[LCSYS_PATH_MAX], *save = NULL, *d;
+        snprintf(dirs, sizeof dirs, "%s", path_env && *path_env ? path_env
+                 : "/var/jb/usr/local/bin:/var/jb/usr/bin:/var/jb/bin");
+        for (d = strtok_r(dirs, ":", &save); d; d = strtok_r(NULL, ":", &save)) {
+            if (snprintf(full, sizeof full, "%s/%s", d, file) >= (int)sizeof full)
                 continue;
-            if (access(full, X_OK) == 0 || access(full, F_OK) == 0)
+            if (access(full, F_OK) == 0)
                 return spawn_via_procd("posix_spawnp", pid, full, argv, envp);
         }
     }
@@ -742,6 +744,71 @@ int posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_actions_t 
 
 /* fork / vfork は native/lcfork.c に移した(スタックを複製してスレッドで再現する)。
  * 従来どおり -1 を返させたいときは LCSYS_FORK=fail。 */
+
+/* ------------------------------------------------------------ 子を待つ / 殺す
+ *
+ * 擬似 pid(1000 以上)は procd の台帳にしか無い。本物の waitpid に渡すと ECHILD、
+ * 本物の kill に渡すと無関係のプロセスに届きかねない。台帳に在るものはこちらで
+ * 受け、無いものだけ本物に流す。dbus-run-session は子を waitpid で待ち(実機 2026-09-12
+ * の exit(1) の原因候補)、xios-setsid も同じ。終了コードは WIFEXITED の形に詰める。 */
+#define LC_FAKE_PID_MIN 1000
+
+static int known_fake_pid(int pid)
+{
+    int st;
+    return pid >= LC_FAKE_PID_MIN && lcsys_alive(pid, &st) >= 0;
+}
+
+pid_t waitpid(pid_t pid, int *status, int options)
+{
+    static pid_t (*real)(pid_t, int *, int);
+    if (pid >= LC_FAKE_PID_MIN && known_fake_pid((int)pid)) {
+        int code = 0;
+        int r = lcsys_waitpid((int)pid, &code, options & WNOHANG);
+        if (r > 0 && status)
+            *status = (code & 0xff) << 8;   /* WIFEXITED + WEXITSTATUS */
+        return (pid_t)r;
+    }
+    if (pid == -1 && lcsys_is_guest_thread()) {
+        /* 「どれでもいい」はゲストの子の対応関係を持っていないので答えられない。
+         * WNOHANG なら「まだ」、そうでなければ子が居ないことにする */
+        if (options & WNOHANG)
+            return 0;
+        errno = ECHILD;
+        return -1;
+    }
+    if (!real)
+        real = (pid_t (*)(pid_t, int *, int))find_real("waitpid");
+    return real ? real(pid, status, options) : -1;
+}
+
+pid_t wait(int *status)
+{
+    return waitpid(-1, status, 0);
+}
+
+pid_t wait4(pid_t pid, int *status, int options, struct rusage *ru)
+{
+    static pid_t (*real)(pid_t, int *, int, struct rusage *);
+    if ((pid >= LC_FAKE_PID_MIN && known_fake_pid((int)pid)) || (pid == -1 && lcsys_is_guest_thread())) {
+        if (ru)
+            memset(ru, 0, sizeof *ru);
+        return waitpid(pid, status, options);
+    }
+    if (!real)
+        real = (pid_t (*)(pid_t, int *, int, struct rusage *))find_real("wait4");
+    return real ? real(pid, status, options, ru) : -1;
+}
+
+int kill(pid_t pid, int sig)
+{
+    static int (*real)(pid_t, int);
+    if (pid >= LC_FAKE_PID_MIN && known_fake_pid((int)pid))
+        return lcsys_kill((int)pid, sig);
+    if (!real)
+        real = (int (*)(pid_t, int))find_real("kill");
+    return real ? real(pid, sig) : -1;
+}
 
 void exit(int status)
 {

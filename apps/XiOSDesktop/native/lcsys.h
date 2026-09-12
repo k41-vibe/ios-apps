@@ -47,6 +47,11 @@ extern "C" {
  * log_fd: where lcsys_log() writes (the console pipe). Returns 0. */
 int lcsys_spawn(const char *path, char *const argv[], char *const envp[], int fd_out, int fd_err);
 int lcsys_wait(int pid, int *status);
+/* waitpid 相当: 0 = まだ動いている(nohang のとき), pid = 回収した(*status は終了コード),
+ * -1 = 知らない pid(errno ECHILD)。nohang=0 なら終わるまで待つ。 */
+int lcsys_waitpid(int pid, int *status, int nohang);
+/* kill 相当。擬似 pid を知っていれば 0(スレッドは止められないので記録だけ)、知らなければ -1。 */
+int lcsys_kill(int pid, int sig);
 /* Poll a pid without reaping it (for guests that never return, e.g. iosc):
  * 1 = running, 0 = finished (*status = exit code), -1 = unknown pid (ECHILD).
  * `status` may be NULL. lcsys_wait stays the only thing that frees a proc. */
@@ -110,6 +115,7 @@ void xs_info(xs_conn *c, int *w, int *h, int *stride);
  * event with this same seq. One RELEASED per DIRTY, never coalesced. */
 int xs_release(xs_conn *c, uint32_t surface_id, uint64_t seq);
 int xs_presented(xs_conn *c, uint64_t seq, uint32_t us_since_present, int measured);
+int xs_pacing(xs_conn *c, int32_t until_deadline_us, uint32_t interval_us, int32_t min_mfps, int32_t max_mfps);
 void xs_close(xs_conn *c);
 /* The 32-byte tokens, raw: the release timeline arrives once in STREAM_INFO, the
  * presentation fence with every DIRTY (so read it right after xs_poll returned 1).

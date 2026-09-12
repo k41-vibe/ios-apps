@@ -20,7 +20,7 @@ SOURCES = [
     ("maxleiter", os.path.join(HERE, "Packages"), "https://repo.maxleiter.com/"),
     ("procursus", os.path.join(HERE, "Packages.procursus"), "https://apt.procurs.us/"),
 ]
-SEEDS = ["iosc", "iosc-shell", "foot", "nautilus", "bash", "coreutils",
+SEEDS = ["iosc", "iosc-shell", "foot", "bash", "coreutils",
          "pkg-config", "dbus", "angle", "wayland", "libwayland0", "libwayland-dev",
          # extra seeds closing @rpath deps that Depends fields miss (found by stage.py, 2026-09-11):
          "libgtk-3-0",                   # libgtk-3.0.dylib   <- libgnome-autoar-gtk (maxleiter only)
@@ -29,9 +29,12 @@ SEEDS = ["iosc", "iosc-shell", "foot", "nautilus", "bash", "coreutils",
          "libintl-dev",                  # unversioned libintl.dylib <- librsvg-2 / libpixbufloader-svg; only libintl-dev ships it
          # 2026-09-12 追加。中身のあるアプリを 1 本入れるための種:
          "xios-fonts-noto",   # フォントが 1 つも入っていなかった。ドックが頭文字しか描けないのもこれ
+         "gsettings-desktop-schemas", # org.gnome.desktop.* のスキーマ。libadwaita/GTK4 が g_settings_new で参照し、無いと abort する
          "gnome-text-editor", # GTK4 のテキストエディタ。打った文字が出る窓(GTK4 本体は nautilus 経由で既に入っている)
          "mesa-demos",        # Wayland の OpenGL 実演。動く絵が出るかを一発で見る
          ]
+# NOT seeded: nautilus (2026-09-13 に外した): 15 パッケージ 26MB を引き込み、tracker と dbus 活性化が要るので
+#   今は動かない。GTK4 の代表は gnome-text-editor。GTK4 本体は gnome-text-editor が引く。
 # NOT seeded: com.max.xios (脱獄機用の表示アプリ Xios.app)。XiOSLite の Swift ホストが同じ役目を果たすので不要。
 #   同梱すると jb/Applications/Xios.app という入れ子の .app ができ、LiveContainer の署名器が
 #   名前で拾って「署名できないファイル」警告を出す。leaf パッケージなので落として安全。
