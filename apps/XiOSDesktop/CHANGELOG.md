@@ -8,6 +8,20 @@
 
 ## [Unreleased]
 
+### Fixed
+- **iOS では `task_for_pid()` が自分自身の pid に対しても通らない**(実機 2026-09-12:
+  `xios: task_for_pid(1199) failed: 0x5 ((os/kern) failure)`)。macOS とは違う点で、
+  「同一プロセスなら権限なしで成立する」という当初の読みが外れていた。iosc は相手の
+  task port を取ってから IOSurface のポートを送るので、これが画面の出ない直接の原因だった。
+  `task_for_pid` を横取りし、自分の pid なら `mach_task_self()` を返す
+  (iosc の libSystem 依存は relink 済みなので、この定義が割り当たる)
+- コンポジタが bind してから listen するまでに GPU 初期化が挟まり、ソケットが見えていても
+  少しの間 `ECONNREFUSED` が返る。繋がるまで 200ms 間隔で最大 10 秒待つようにした
+
+### Added
+- `LCSYS_TRACE=1` を既定で有効化。経路変換を 1 件ずつログに出す
+  (xkb がどのパスを要求して失敗しているかを実機で見るための診断)
+
 ## [0.0.1] - 2026-09-12
 
 XiOSLite v0.2.1 を土台に、**画面を出す部分**を足した最初の版。`com.rutoi.xiosdesktop` として

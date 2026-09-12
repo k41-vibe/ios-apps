@@ -115,6 +115,8 @@ final class Runner {
             "XDG_RUNTIME_DIR": runtimeDir,
             "WAYLAND_DISPLAY": "wayland-0",   // iosc の -s と同じ名前(クライアントが見る側)
             "IOSC_DEBUG": "1",
+            // 1 にすると経路変換を 1 件ずつログに出す(xkb がどのパスを要求したかを見るため)
+            "LCSYS_TRACE": "1",
             "IOSC_IGNORE_ACTIVE_SESSION": "1",   // /var/jb/tmp/xios-active-session は読めない
             "XIOS_RUNTIME_TMP": runtimeDir,      // クライアント側のログ置き場 (XSurface.c)
             "XDG_DATA_DIRS": "/var/jb/usr/share",
