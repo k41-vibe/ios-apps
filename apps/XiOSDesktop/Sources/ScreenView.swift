@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import MetalKit
 import IOSurface
 import QuartzCore
@@ -66,6 +67,43 @@ struct XSurfaceAPI {
     }
 }
 
+// 入力ソケット側の窓口(native/xinput.c)。画面が無くても成立するので別の struct にする。
+struct XInputAPI {
+    typealias ConnectFn = @convention(c) (UnsafePointer<CChar>?) -> UnsafeMutableRawPointer?
+    typealias TouchFn   = @convention(c) (UnsafeMutableRawPointer?, Int32, Int32, Int32, Int32) -> Int32
+    typealias MotionFn  = @convention(c) (UnsafeMutableRawPointer?, Int32, Int32) -> Int32
+    typealias TextFn    = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?) -> Int32
+    typealias KeyFn     = @convention(c) (UnsafeMutableRawPointer?, Int32, Int32, Int32) -> Int32
+    typealias SentFn    = @convention(c) (UnsafeMutableRawPointer?) -> UInt
+
+    let connect: ConnectFn
+    let touch: TouchFn
+    let motion: MotionFn
+    let text: TextFn
+    let key: KeyFn
+    let sent: SentFn
+
+    init?(handle: UnsafeMutableRawPointer, log: ConsoleLog) {
+        var missing: [String] = []
+        func sym(_ n: String) -> UnsafeMutableRawPointer? {
+            guard let p = dlsym(handle, n) else { missing.append(n); return nil }
+            return p
+        }
+        let c = sym("xi_connect"), t = sym("xi_touch"), m = sym("xi_motion")
+        let x = sym("xi_text"), k = sym("xi_key"), n = sym("xi_sent")
+        guard missing.isEmpty, let c = c, let t = t, let m = m, let x = x, let k = k, let n = n else {
+            log.log("入力: libLCsys.dylib に \(missing.joined(separator: ", ")) が無い ← 古い dylib")
+            return nil
+        }
+        connect = unsafeBitCast(c, to: ConnectFn.self)
+        touch = unsafeBitCast(t, to: TouchFn.self)
+        motion = unsafeBitCast(m, to: MotionFn.self)
+        text = unsafeBitCast(x, to: TextFn.self)
+        key = unsafeBitCast(k, to: KeyFn.self)
+        sent = unsafeBitCast(n, to: SentFn.self)
+    }
+}
+
 final class ScreenClient: NSObject, MTKViewDelegate {
     // 1 フレーム分の ack 対象。DIRTY 1 回につき RELEASED 1 回(まとめない)
     private struct Frame {
@@ -101,6 +139,13 @@ final class ScreenClient: NSObject, MTKViewDelegate {
     private var releaseErrors = 0
     // DIRTY が 1 件も来ないまま空回りした draw の回数。黙って黒いままになるのを防ぐ
     private var idleDraws = 0
+
+    // ---- 入力(第 6 節)。画面と同じ 32 バイトのレコードを別のソケットに流す
+    var xin: XInputAPI?
+    private var inputConn: UnsafeMutableRawPointer?
+    private var slots: [ObjectIdentifier: Int32] = [:]   // UITouch -> スロット 0..9
+    private var lastViewport: MTLViewport?
+    private var touchesSent = 0
     // finish() は描画スレッド(描けなかったとき)と Metal の完了ハンドラの両方から
     // 呼ばれるので、その中身だけは直列化する
     private let finishLock = NSLock()
@@ -224,6 +269,81 @@ final class ScreenClient: NSObject, MTKViewDelegate {
         return tex
     }
 
+    // ------------------------------------------------------------ 入力
+
+    func connectInput(path: String) {
+        guard inputConn == nil, let xin = xin else { return }
+        guard let c = path.withCString({ xin.connect($0) }) else {
+            log.log("入力: 繋がらない \(path) errno \(errno)")
+            return
+        }
+        inputConn = c
+        log.log("入力: 接続 \(path)")
+    }
+
+    /// 画面上の点(ポイント)を出力(IOSurface)のピクセルに戻す。範囲外は nil。
+    /// 逆変換は描画と同じ aspectFit を使う。ビューポートは drawableSize と同じ
+    /// ピクセル系なので、点の方を contentScaleFactor で揃えてから引く。
+    private func fbPoint(_ p: CGPoint, in view: MTKView) -> (Int32, Int32)? {
+        guard fbWidth > 0, fbHeight > 0 else { return nil }
+        let vp = lastViewport ?? Self.aspectFit(content: CGSize(width: fbWidth, height: fbHeight),
+                                                into: view.drawableSize)
+        guard vp.width > 0, vp.height > 0 else { return nil }
+        let sx = p.x * view.contentScaleFactor, sy = p.y * view.contentScaleFactor
+        let fx = (Double(sx) - vp.originX) / vp.width * Double(fbWidth)
+        let fy = (Double(sy) - vp.originY) / vp.height * Double(fbHeight)
+        guard fx >= 0, fy >= 0, fx < Double(fbWidth), fy < Double(fbHeight) else { return nil }
+        return (Int32(fx), Int32(fy))
+    }
+
+    /// phase: 0=離 1=触 2=移動 3=取消(第 6 節)
+    func send(touches: Set<UITouch>, phase: Int32, in view: MTKView) {
+        guard let conn = inputConn, let xin = xin else { return }
+        for t in touches {
+            let key = ObjectIdentifier(t)
+            let slot: Int32
+            if let s = slots[key] {
+                slot = s
+            } else if phase == 1 {
+                let used = Set(slots.values)
+                guard let free = (Int32(0)..<Int32(10)).first(where: { !used.contains($0) }) else { continue }
+                slot = free
+                slots[key] = free
+            } else {
+                continue   // 触り始めを見ていない指は無視する
+            }
+            if let (x, y) = fbPoint(t.location(in: view), in: view) {
+                if phase != 0 { _ = xin.motion(conn, x, y) }   // 指の位置に合わせて印も動かす
+                _ = xin.touch(conn, x, y, slot, phase)
+                touchesSent += 1
+                if touchesSent <= 3 || touchesSent % 200 == 0 {
+                    log.log("入力: touch slot=\(slot) phase=\(phase) (\(x),\(y)) 累計 \(touchesSent)")
+                }
+            }
+            if phase == 0 || phase == 3 { slots.removeValue(forKey: key) }
+        }
+    }
+
+    // iOS のキーボードを出し入れする。表示中のビューを覚えておいて first responder にする。
+    weak var view: ScreenMTKView?
+    func toggleKeyboard() {
+        guard let v = view else { return }
+        if v.isFirstResponder { v.resignFirstResponder() } else { v.becomeFirstResponder() }
+    }
+
+    /// X の keysym を押して離す。改行 0xff0d、後退 0xff08。
+    func sendKey(_ keysym: Int32) {
+        guard let conn = inputConn, let xin = xin else { return }
+        _ = xin.key(conn, keysym, 1, 0)
+        _ = xin.key(conn, keysym, 0, 0)
+    }
+
+    func send(text: String) {
+        guard let conn = inputConn, let xin = xin, !text.isEmpty else { return }
+        _ = text.withCString { xin.text(conn, $0) }
+        log.log("入力: text \(text.count) 文字")
+    }
+
     // DIRTY を待たずに、握手で受け取った面をそのまま 1 枚貼っておく。
     // iosc は自分の表側のバッファに描き続けているので、フェンス無しで読むと
     // 破れて見えることはあるが、「何も出ない」と「出るが通知が来ない」を
@@ -312,6 +432,7 @@ final class ScreenClient: NSObject, MTKViewDelegate {
         }
         let vp = Self.aspectFit(content: CGSize(width: tex.width, height: tex.height),
                                 into: view.drawableSize)
+        lastViewport = vp   // タッチ座標を出力ピクセルに戻すのに使う
         enc.setViewport(vp)
         enc.setRenderPipelineState(pipeline)
         var flip = flipY
@@ -410,11 +531,50 @@ final class ScreenClient: NSObject, MTKViewDelegate {
     """
 }
 
+/// タッチを拾って入力ソケットに流す MTKView。SwiftUI のジェスチャだと
+/// 複数の指の追跡とスロットの対応が取りにくいので、素の touchesXxx を使う。
+final class ScreenMTKView: MTKView, UIKeyInput {
+    weak var client: ScreenClient?
+
+    // iOS のキーボードの受け皿。文字は TEXT、改行と後退だけ KEY で送る
+    // (keysym への対応表を持たずに済ませるため。第 6 節)
+    override var canBecomeFirstResponder: Bool { true }
+    var hasText: Bool { true }
+    var keyboardType: UIKeyboardType {
+        get { .asciiCapable }
+        set { }
+    }
+    func insertText(_ text: String) {
+        if text.allSatisfy({ $0.isNewline }) {
+            client?.sendKey(0xff0d)      // Return
+        } else {
+            client?.send(text: text)
+        }
+    }
+    func deleteBackward() { client?.sendKey(0xff08) }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        client?.send(touches: touches, phase: 1, in: self)
+    }
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        client?.send(touches: touches, phase: 2, in: self)
+    }
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        client?.send(touches: touches, phase: 0, in: self)
+    }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        client?.send(touches: touches, phase: 3, in: self)
+    }
+}
+
 struct ScreenView: UIViewRepresentable {
     let client: ScreenClient
 
     func makeUIView(context: Context) -> MTKView {
-        let v = MTKView()
+        let v = ScreenMTKView()
+        v.client = client
+        client.view = v
+        v.isMultipleTouchEnabled = true
         client.attach(view: v)
         return v
     }

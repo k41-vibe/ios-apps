@@ -27,10 +27,15 @@ struct ContentView: View {
                         // そこに描いてもコンポジタの一番上の帯(ioscbar)が読めない
                         .ignoresSafeArea(edges: [.bottom, .horizontal])
                     // ログは常に取り戻せるようにしておく(iosc が落ちたときに見たいのはログ)
-                    Button("コンソール") { mode = .console }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        .padding(12)
+                    HStack(spacing: 8) {
+                        Button("キーボード") { client.toggleKeyboard() }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        Button("コンソール") { mode = .console }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                    }
+                    .padding(12)
                 }
             } else {
                 console
@@ -164,6 +169,9 @@ struct ContentView: View {
             guard let api = XSurfaceAPI(handle: handle, log: l) else { return }
             guard let client = ScreenClient(log: l, api: api) else { return }
             guard client.connect(path: r.ddxPath()) else { return }
+            // 入力は画面と別のソケット。繋がらなくても画面は出るので、失敗しても進む
+            client.xin = XInputAPI(handle: handle, log: l)
+            client.connectInput(path: r.inputPath())
             DispatchQueue.main.async {
                 screen = client
                 mode = .screen

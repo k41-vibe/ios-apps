@@ -144,6 +144,21 @@ final class Runner {
     static var logicalPoints = CGSize(width: 393, height: 852 - 59)
     static var topInsetPoints: CGFloat = 59
 
+    /// 実際に使えるロケールを 1 回だけ探す。Darwin の libc に glibc の "C.UTF-8" は無く、
+    /// "en_US.UTF-8" もこのサンドボックスからは引けなかった(実機 2026-09-12:
+    /// `setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory`)。
+    /// ホストとゲストは同じ libSystem を使うので、ここで通った名前はゲストでも通る。
+    static let locale: String = {
+        let saved = setlocale(LC_ALL, nil).map { String(cString: $0) }
+        var chosen = "C"
+        for cand in ["en_US.UTF-8", "UTF-8", "C.UTF-8"] where setlocale(LC_ALL, cand) != nil {
+            chosen = cand
+            break
+        }
+        if let s = saved { setlocale(LC_ALL, s) }
+        return chosen
+    }()
+
     /// UIKit から安全領域を読んで logicalPoints を決める。**メインスレッドから呼ぶこと**。
     static func measureScreen() -> String {
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
@@ -200,10 +215,10 @@ final class Runner {
             "TERM": "dumb",
             // Darwin の libc に glibc の "C.UTF-8" は無い(setlocale が失敗して "C" に落ち、
             // foot が「'C' is not a UTF-8 locale」と言う)。Darwin にある綴りを使う
-            "LANG": "en_US.UTF-8",
-            "LC_CTYPE": "en_US.UTF-8",
-            // LC_ALL は LANG より優先される。ここが "C" のままだと LANG を直しても効かない
-            "LC_ALL": "en_US.UTF-8",
+            // LC_ALL は LANG より優先される。3 つとも「実際に引ける名前」で揃える
+            "LANG": Runner.locale,
+            "LC_CTYPE": Runner.locale,
+            "LC_ALL": Runner.locale,
             // ioscbg のデスクトップ部品(Storage / Memory / Load / Session)の置き場。
             // 設定ファイルが無いと 1 つも描かれない(実機 2026-09-12「ストレージが出ない」)
             "IOSC_WIDGET_CONFIG": widgetConfigPath,
@@ -243,6 +258,7 @@ final class Runner {
         for d in [home, runtimeDir, xiosDir] {
             try? FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
         }
+        log.log("ロケール: \(Runner.locale)(この名前だけが setlocale を通った)")
         writeWidgetConfig()
         for (k, v) in environment() { setenv(k, v, 1) }
 
@@ -519,6 +535,9 @@ final class Runner {
 
     // クライアント(ScreenView)が繋ぎに行く先。ioscArgv() の -ddx-sock と同じ文字列。
     func ddxPath() -> String { xiosDir + "/ddx" }
+
+    // 入力ソケット。ioscArgv() の -input-sock と同じ文字列
+    func inputPath() -> String { xiosDir + "/in" }
 
     // start() で起こした iosc がまだ生きているか
     func ioscAlive() -> Bool {

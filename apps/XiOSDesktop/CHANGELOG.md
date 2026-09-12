@@ -8,6 +8,24 @@
 
 ## [Unreleased]
 
+## [0.0.6] - 2026-09-12
+
+### Added
+- **タッチが iosc に届くようになった**(計画の G2-c)。`native/xinput.c` が入力ソケットに繋ぎ、
+  画面の指を出力ピクセルに戻して TOUCH レコードとして流す(仕様 6 節)。10 本までスロットを
+  割り当てて追跡する。HELLO は双方向で、`window_id==1` かつ他が全部 0 でないと切断される。
+  サーバーから来る TRAITS / HAPTIC は読み捨てる専用スレッドを 1 本置いた(放置すると詰まる)
+- **「キーボード」ボタン**。iOS のキーボードを出し、文字は TEXT、改行と後退は KEY(keysym
+  0xff0d / 0xff08)で送る。keysym の対応表を持たずに済ませるため、普通の文字は TEXT に寄せた
+
+### Fixed
+- **ロケールを決め打ちにするのをやめた**。`en_US.UTF-8` はこのサンドボックスから引けず
+  (実機: `setlocale: cannot change locale (en_US.UTF-8): No such file or directory`)、
+  foot が起動直後に `setlocale() failed` で転んでいた。起動時に `en_US.UTF-8` →
+  `UTF-8` → `C.UTF-8` → `C` の順に実際に `setlocale` を通して、通った名前を
+  `LANG` / `LC_CTYPE` / `LC_ALL` の 3 つに揃える。ホストとゲストは同じ libSystem を
+  使うので、ホストで通った名前はゲストでも通る
+
 ## [0.0.5] - 2026-09-12
 
 ### Added
