@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-12
+
 ### Added
 - 版番号・ビルド番号・コミットを画面と起動ログに表示(`AppVersion`)。LiveContainer の一覧でも版が分かる
 - 同梱バイナリの未定義シンボルを事前検査する `tools/xios/audit_symbols.py`
