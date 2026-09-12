@@ -5,6 +5,11 @@
 
 ## [Unreleased]
 
+### Changed
+- **画面を出す機能は別アプリ [XiOSDesktop](../XiOSDesktop/CHANGELOG.md) へ移した**(瑠人さんの指示、2026-09-12)。
+  XiOSLite は実験用コンソール(コマンド実行・計測・段階ごとの動作確認)として残す。
+  下の「ddx クライアント」以下は XiOSDesktop v0.0.1 に入っている
+
 ### Added
 - **ddx クライアント** `native/xsurface.c`。iosc の `-ddx-sock` に繋いで画面を受け取る側
   (`x11/apps/Xios/Sources/XSurface.c` の移植、`tools/xios/iosc-host-protocol.md` 2〜5 節)。

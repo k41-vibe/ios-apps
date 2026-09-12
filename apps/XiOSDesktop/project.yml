@@ -1,0 +1,39 @@
+name: XiOSDesktop
+options:
+  bundleIdPrefix: com.rutoi
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "16.0"
+targets:
+  XiOSDesktop:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: XiOSDesktop
+        # 版は CI が xcodebuild の引数で注入する(docs/VERSIONING.md)。手元ビルドは 0.0.0 (0) local
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LCGitCommit: $(LC_GIT_SHA)
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        ITSAppUsesNonExemptEncryption: false
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.rutoi.xiosdesktop
+        MARKETING_VERSION: "0.0.0"
+        CURRENT_PROJECT_VERSION: "0"
+        LC_GIT_SHA: "local"
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_REQUIRED: "NO"
+        ENABLE_BITCODE: "NO"
+        LD_RUNPATH_SEARCH_PATHS: "@executable_path/Frameworks"
