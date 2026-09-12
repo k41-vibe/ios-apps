@@ -28,6 +28,8 @@
 #include <stdarg.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/mount.h>
+#include <sys/statvfs.h>
 #include <dirent.h>
 #include <spawn.h>
 
@@ -135,6 +137,8 @@ struct lcsys_real {
     int (*stat)(const char *, struct stat *);
     int (*lstat)(const char *, struct stat *);
     int (*fstatat)(int, const char *, struct stat *, int);
+    int (*statfs)(const char *, struct statfs *);
+    int (*statvfs)(const char *, struct statvfs *);
     int (*access)(const char *, int);
     int (*faccessat)(int, const char *, int, int);
     DIR *(*opendir)(const char *);

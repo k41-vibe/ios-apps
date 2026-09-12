@@ -8,6 +8,23 @@
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-09-12
+
+### Added
+- **デスクトップ部品(Storage / Memory / Load / Session)を出す**。出ていなかったのは
+  故障ではなく、ioscbg が設定ファイルを読めないと 1 つも描かない作りだったから。既定の置き場
+  `/var/mobile/Library/Preferences/com.max.iosc-widgets.conf` はこのサンドボックスには無い。
+  書式は逆アセンブルで確かめた `名前 x y 有効` の 4 つ組(`fscanf(f, "%31s %d %d %d")` が
+  4 を返したときだけ採用、3 番目は 0 以外で表示)。自前の設定を書いて `IOSC_WIDGET_CONFIG` で指す
+- `statfs` / `statvfs` の横取り。Storage 部品が空き容量をこれで読むので、経路変換を
+  通さないと `/var/jb` を本物の根として見に行って失敗する
+
+### Fixed
+- **上端を iOS に譲るようにした**。Dynamic Island とステータスバーが乗っている範囲に
+  描いても、コンポジタの一番上に置かれる ioscbar が潜って読めない。起動時に安全領域を測り、
+  `-logical` をその分だけ低くして、表示側も同じ範囲に置く(拡大縮小は 1:1 のまま)
+- `LC_ALL=C` が `LANG` を上書きしていた。v0.0.4 で `LANG` を直しても効いていなかった
+
 ## [0.0.4] - 2026-09-12
 
 ### Fixed

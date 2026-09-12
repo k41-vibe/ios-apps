@@ -80,6 +80,8 @@ static void resolve_real_once(void)
     lcsys_real.open = (int (*)(const char *, int, ...))find_real("open");
     lcsys_real.openat = (int (*)(int, const char *, int, ...))find_real("openat");
     lcsys_real.stat = (int (*)(const char *, struct stat *))find_real("stat");
+    lcsys_real.statfs = (int (*)(const char *, struct statfs *))find_real("statfs");
+    lcsys_real.statvfs = (int (*)(const char *, struct statvfs *))find_real("statvfs");
     lcsys_real.lstat = (int (*)(const char *, struct stat *))find_real("lstat");
     lcsys_real.fstatat = (int (*)(int, const char *, struct stat *, int))find_real("fstatat");
     lcsys_real.access = (int (*)(const char *, int))find_real("access");
@@ -269,6 +271,22 @@ static int marker_for(const char *path, char *marker, size_t cap, char *target, 
     while (n > 0 && (target[n - 1] == '\n' || target[n - 1] == '\r'))
         target[--n] = '\0';
     return n > 0;
+}
+
+/* statfs/statvfs: ioscbg のデスクトップ部品(Storage)が空き容量をこれで読む。
+ * 横取りしないと /var/jb を本物の根として見に行って失敗する。 */
+int statfs(const char *path, struct statfs *b)
+{
+    char buf[LCSYS_PATH_MAX];
+    ENSURE();
+    return lcsys_real.statfs(MAPPED(path, buf), b);
+}
+
+int statvfs(const char *path, struct statvfs *b)
+{
+    char buf[LCSYS_PATH_MAX];
+    ENSURE();
+    return lcsys_real.statvfs(MAPPED(path, buf), b);
 }
 
 int lstat(const char *path, struct stat *st)
