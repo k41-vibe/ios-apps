@@ -101,6 +101,8 @@ static void resolve_real_once(void)
     lcsys_real.chdir = (int (*)(const char *))find_real("chdir");
     lcsys_real.exit = (void (*)(int))find_real("exit");
     lcsys_real._exit = (void (*)(int))find_real("_exit");
+    lcsys_real.fopen = (FILE *(*)(const char *, const char *))find_real("fopen");
+    lcsys_real.freopen = (FILE *(*)(const char *, const char *, FILE *))find_real("freopen");
 }
 
 void lcsys_resolve_real(void)
@@ -199,6 +201,23 @@ int openat(int fd, const char *path, int oflag, ...)
     if (r < 0 && errno == ENOENT && !(oflag & O_CREAT) && lc_stub_name(path, stub, sizeof stub))
         r = lcsys_real.openat(fd, stub, oflag, mode);
     return r;
+}
+
+/* fopen/freopen: see the note in lcsys.h. Without these, everything that reads a data file
+ * through the stdio layer (xkbcommon's rules, fontconfig, gsettings schemas, ...) bypasses
+ * the /var/jb mapping, because libSystem calls its OWN open() internally. */
+FILE *fopen(const char *path, const char *mode)
+{
+    char buf[LCSYS_PATH_MAX];
+    ENSURE();
+    return lcsys_real.fopen(MAPPED(path, buf), mode);
+}
+
+FILE *freopen(const char *path, const char *mode, FILE *stream)
+{
+    char buf[LCSYS_PATH_MAX];
+    ENSURE();
+    return lcsys_real.freopen(path ? MAPPED(path, buf) : path, mode, stream);
 }
 
 int stat(const char *path, struct stat *st)

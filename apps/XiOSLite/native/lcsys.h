@@ -21,6 +21,7 @@
 #define LCSYS_H
 
 #include <stddef.h>
+#include <stdio.h>
 #include <stdarg.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -108,6 +109,11 @@ struct lcsys_real {
     void (*exit)(int);
     void (*_exit)(int);
     void *(*dlopen)(const char *, int);
+    /* fopen/freopen open a path INSIDE libSystem, so a guest calling fopen() never reaches
+     * our open() override and the /var/jb mapping is skipped (device 2026-09-12: xkbcommon
+     * reads rules/evdev with fopen and reported the file missing although it is there). */
+    FILE *(*fopen)(const char *, const char *);
+    FILE *(*freopen)(const char *, const char *, FILE *);
 };
 extern struct lcsys_real lcsys_real;
 void lcsys_resolve_real(void);

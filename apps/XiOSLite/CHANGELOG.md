@@ -5,6 +5,13 @@
 
 ## [Unreleased]
 
+### Fixed
+- `fopen`/`freopen` を横取りしていなかった。libSystem は内部で自前の `open` を呼ぶので、
+  stdio 経由でファイルを読むゲストはパス変換を素通りする。実機で xkbcommon が
+  `rules/evdev` を「無い」と報告し(同梱されている)、キーボードが使えなかった
+  (`iosc: keyboard unavailable (xkb keymap) -> pointer only`)。fontconfig や
+  gsettings のスキーマなど、同じ経路を使うものは全部これに該当していたはず
+
 ## [0.2.1] - 2026-09-12
 
 ### Fixed
