@@ -3,6 +3,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$Name,
     [switch]$NoPush,
+    [switch]$NoRelease,
+    [int]$KeepAssets = 5,
     [string]$Dest = "C:\Users\rutoi\SharedFolder\ios-apps"
 )
 $ErrorActionPreference = "Stop"
@@ -55,3 +57,37 @@ Copy-Item $ipa.FullName "$root\dist\$Name.ipa" -Force
 Copy-Item $ipa.FullName "$Dest\$Name.ipa" -Force
 Write-Host "完成: $Dest\$Name.ipa  ($([math]::Round($ipa.Length/1KB)) KB)"
 Write-Host "iPhone: ファイルApp → SharedFolder/ios-apps/$Name.ipa → 共有 → LiveContainer"
+
+# ---- リリースへの版の積み上げ ----------------------------------------------
+# アプリごとにリリースは 1 つ(タグ = 小文字のアプリ名)。資産のファイル名に
+# コミット番号を入れて積み、古いものは $KeepAssets 個を超えたら消す。
+if (-not $NoRelease) {
+    $tag = $Name.ToLower()
+    $sha = (git rev-parse --short HEAD).Trim()
+    $subject = (git log -1 --pretty=%s).Trim()
+    $asset = "$Name-$sha.ipa"
+    $assetPath = Join-Path "$root\dist" $asset
+    Copy-Item $ipa.FullName $assetPath -Force
+
+    if (-not (gh release view $tag --json tagName 2>$null)) {
+        gh release create $tag --title "$Name" --notes "$Name のビルド置き場。資産のファイル名の末尾がコミット番号。" | Out-Null
+        Write-Host "release 作成: $tag"
+    }
+    # 説明文の先頭に今回の行を足す(新しい版が上)
+    $body = gh release view $tag --json body --jq .body
+    $line = "- ``$sha`` $asset — $subject"
+    gh release edit $tag --notes "$line`n$body" | Out-Null
+
+    Write-Host "release へ添付中: $asset ..."
+    gh release upload $tag $assetPath --clobber
+    Remove-Item $assetPath -Force -ErrorAction SilentlyContinue
+
+    # 古い資産の掃除(名前順ではなく更新時刻順で残す)
+    $assets = gh release view $tag --json assets --jq '.assets | sort_by(.updatedAt) | reverse | .[].name'
+    $old = @($assets) | Select-Object -Skip $KeepAssets
+    foreach ($a in $old) {
+        if ($a) { gh release delete-asset $tag $a --yes 2>$null; Write-Host "古い資産を削除: $a" }
+    }
+    $url = gh release view $tag --json url --jq .url
+    Write-Host "release: $url  (最新資産 = $asset)"
+}
