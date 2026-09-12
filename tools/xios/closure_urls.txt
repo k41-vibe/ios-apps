@@ -7,8 +7,10 @@ https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/dash/dash_0.5.12_i
 https://repo.maxleiter.com/debs/dbus_1.14.10+ios1_iphoneos-arm64.deb
 https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/debianutils/debianutils_5.19_iphoneos-arm64.deb
 https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/file-cmds/file-cmds_430.100.5_iphoneos-arm64.deb
+https://repo.maxleiter.com/debs/fontconfig_2.17.1+ios1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/fontconfig-config_2.17.1+ios1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/foot_1.27.0+ios3_iphoneos-arm64.deb
+https://repo.maxleiter.com/debs/gnome-text-editor_46.3+ios1_iphoneos-arm64.deb
 https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/grep/grep_3.11_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/gsettings-desktop-schemas_46.1+ios1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/hicolor-icon-theme_0.17+ios1_iphoneos-arm64.deb
@@ -26,6 +28,8 @@ https://repo.maxleiter.com/debs/libcairo2_1.16.0-3+ios1_iphoneos-arm64.deb
 https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/libxcrypt/libcrypt2_4.4.36_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libcurl4_8.20.0+ios1_iphoneos-arm64.deb
 https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/libedit/libedit0_3.1-20230828_iphoneos-arm64.deb
+https://repo.maxleiter.com/debs/libeditorconfig0_0.12.11+ios1_iphoneos-arm64.deb
+https://repo.maxleiter.com/debs/libenchant-2-2_2.6.1+ios1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libepoll-shim0_0.0.20240608+ios1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libepoxy0_1.5.7+angle1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libfcft4_3.3.3+ios1_iphoneos-arm64.deb
@@ -35,8 +39,12 @@ https://repo.maxleiter.com/debs/libfontconfig1_2.17.1+ios1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libfreetype6_2.13.3+ios1_iphoneos-arm64.deb
 https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/libfribidi/libfribidi0_1.0.10_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libgdk-pixbuf-2.0-0_2.42.12+ios1_iphoneos-arm64.deb
+https://repo.maxleiter.com/debs/libgl1-mesa-glx_21.0.2+ios1_iphoneos-arm64.deb
+https://repo.maxleiter.com/debs/libglapi-mesa_21.0.2+ios1_iphoneos-arm64.deb
+https://repo.maxleiter.com/debs/libglew2.2_2.2.0+ios1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libglib2.0-0_2.78.0+ios1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libglib2.0-bin_2.78.0+ios1_iphoneos-arm64.deb
+https://repo.maxleiter.com/debs/libglu1-mesa_9.0.1+ios1_iphoneos-arm64.deb
 https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/libgmp10/libgmp10_6.3.0_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libgnome-autoar-0-0_0.4.5+ios1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libgnome-desktop-4-2_44.1+ios1_iphoneos-arm64.deb
@@ -45,6 +53,7 @@ https://repo.maxleiter.com/debs/libgraphite2-3_1.3.14+ios1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libgtk-3-0_3.24.38+ios3_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libgtk-4-1_4.14.5+wl1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libgtkintl_1.1_iphoneos-arm64.deb
+https://repo.maxleiter.com/debs/libgtksourceview-5-0_5.12.1+ios1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libharfbuzz0b_10.2.0+ios2_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libicu74_74.2+ios1_iphoneos-arm64.deb
 https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/gettext/libintl-dev_0.22_iphoneos-arm64.deb
@@ -77,6 +86,7 @@ https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/openssl/libssl3_3.
 https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/libtiff/libtiff5_4.2.0_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libtracker-sparql-3.0-0_3.7.3-2+ios1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libutf8proc3_2.9.0+ios1_iphoneos-arm64.deb
+https://repo.maxleiter.com/debs/libuuid16_1.6.2-3+ios1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libwayland-dev_1.23.1+ios1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libwayland0_1.23.1+ios1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libx11-6_1.7.3.1+ios1_iphoneos-arm64.deb
@@ -102,11 +112,13 @@ https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/libxrender/libxren
 https://repo.maxleiter.com/debs/libyaml-0-2_0.2.5+ios1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/libz1_1.3.1+ios1_iphoneos-arm64.deb
 https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/zstd/libzstd1_1.5.5_iphoneos-arm64.deb
+https://repo.maxleiter.com/debs/mesa-demos_8.4.0+xios1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/nautilus_46.4+ios1_iphoneos-arm64.deb
 https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/ncurses/ncurses-term_6.4_all.deb
 https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/pkg-config/pkg-config_0.29.2-3_iphoneos-arm64.deb
 https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/profile.d/profile.d_0-7_iphoneos-arm64.deb
 https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/sed/sed_4.9_iphoneos-arm64.deb
 https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/system-cmds/system-cmds_979.100.8_iphoneos-arm64.deb
+https://repo.maxleiter.com/debs/xios-fonts-noto_1.0.1_iphoneos-arm64.deb
 https://repo.maxleiter.com/debs/xkeyboard-config_2.32+ios1_all.deb
 https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/zsh/zsh_5.9_iphoneos-arm64.deb

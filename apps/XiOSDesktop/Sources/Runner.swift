@@ -224,6 +224,9 @@ final class Runner {
             // ioscbg のデスクトップ部品(Storage / Memory / Load / Session)の置き場。
             // 設定ファイルが無いと 1 つも描かれない(実機 2026-09-12「ストレージが出ない」)
             "IOSC_WIDGET_CONFIG": widgetConfigPath,
+            // GTK / Qt のアプリは連絡係(dbus)が居ないと起動を諦めることがある。
+            // 先に場所だけ教えておき、実体は「dbus」ボタンで起こす
+            "DBUS_SESSION_BUS_ADDRESS": "unix:path=" + dbusSocketPath,
             "SHELL": "/var/jb/usr/bin/bash",
             "USER": "mobile",
         ]
@@ -534,6 +537,31 @@ final class Runner {
     func startTestClient() { startClient("/var/jb/usr/local/bin/iosc-client", label: "iosc-client") }
     /// ドック(下の帯)。バーと同じ iosc-shell の別の顔。
     func startDock() { startClient("/var/jb/usr/local/bin/ioscdock", label: "ioscdock") }
+    // ------------------------------------------------------------ dbus とアプリ
+
+    /// 短くしておく。AF_UNIX の sun_path は 104 バイトしかない
+    var dbusSocketPath: String { tmp + "/d" }
+
+    /// アプリ同士の連絡係。`--nofork` があるので分身を作らずそのまま動く。
+    /// つまり iOS が禁じている fork を一度も踏まない。
+    func startDbus() {
+        startClient("/var/jb/usr/bin/dbus-daemon", label: "dbus-daemon",
+                    args: ["--session", "--nofork", "--address=unix:path=" + dbusSocketPath],
+                    settle: 1.2)
+    }
+
+    /// GTK4 のテキストエディタ。**打った文字がその場に出る**はずの窓。
+    func startEditor() {
+        if !aliveLabels().contains("dbus-daemon") { startDbus() }
+        startClient("/var/jb/usr/bin/gnome-text-editor", label: "gnome-text-editor", settle: 2.5)
+    }
+
+    /// Wayland 版の回る歯車。dbus も子プロセスも要らないので、
+    /// 「動く絵が届くか」だけを見るのに一番向いている。
+    func startGears() {
+        startClient("/var/jb/usr/bin/es2gears_wayland", label: "es2gears", settle: 1.5)
+    }
+
     /// 開いている窓の一覧。
     func startOverview() { startClient("/var/jb/usr/local/bin/ioscoverview", label: "ioscoverview") }
 
@@ -548,6 +576,7 @@ final class Runner {
             ("/var/jb/usr/local/bin/ioscbar", "ioscbar"),
             ("/var/jb/usr/local/bin/ioscdock", "ioscdock"),
             ("/var/jb/usr/local/bin/iosc-client", "iosc-client"),
+            ("/var/jb/usr/bin/es2gears_wayland", "es2gears"),
             (Self.footPath, "foot"),
             // 一覧(ioscoverview)は画面全体を覆う切り替え画面で、出すと壁紙もバーも
             // 隠れる。単体のボタンから出す方が分かるのでここには入れない

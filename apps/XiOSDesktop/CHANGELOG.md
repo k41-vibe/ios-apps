@@ -8,6 +8,25 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-12
+
+### Added
+- **`posix_spawn` / `posix_spawnp` を本物にした**。今までは記録して `ENOSYS` を返すだけの
+  空実装だったが、procd に流してスレッドとして起こすようにした。`fork` が真似できないのは
+  「1 回呼んで 2 回返る」からで、`posix_spawn` にはその問題が無いので代われる。
+  `posix_spawnp` は `/var/jb/usr/local/bin` → `/var/jb/usr/bin` → `/var/jb/bin` の順に探す
+- **アプリを 3 つ倉庫から足した**(112 → 124 パッケージ、約 9MB 増):
+  - `gnome-text-editor` — GTK4 のテキストエディタ。**打った文字がその場に出る窓**。
+    GTK4 本体は nautilus 経由ですでに入っていたので、追加は 4 本だけで済んだ
+  - `mesa-demos` — `es2gears_wayland`(回る歯車)。dbus も子プロセスも要らないので、
+    「動く絵が届くか」だけを見るのに一番向いている
+  - `xios-fonts-noto` — **フォント**。今までアプリに 1 つも入っていなかった
+- **`dbus-daemon --session --nofork`** を起こすボタン。`--nofork` があるので分身を作らず
+  そのまま動く。つまり iOS が禁じている `fork` を一度も踏まない。
+  `DBUS_SESSION_BUS_ADDRESS` は先に環境へ入れてある(ソケット名は `sun_path` 104 バイトに
+  収めるため 1 文字)
+- 「歯車」「dbus」「エディタ」のボタン。「全部」にも歯車を入れた
+
 ## [0.0.9] - 2026-09-12
 
 ### Fixed

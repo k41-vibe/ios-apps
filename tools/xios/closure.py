@@ -27,6 +27,10 @@ SEEDS = ["iosc", "iosc-shell", "foot", "nautilus", "bash", "coreutils",
          "libcurl4",                     # libcurl.4.dylib    <- libappstream (maxleiter 8.20 > procursus 8.7)
          "libcairo-script-interpreter2", # libcairo-script-interpreter.2.dylib <- libgtk-4 (both repos)
          "libintl-dev",                  # unversioned libintl.dylib <- librsvg-2 / libpixbufloader-svg; only libintl-dev ships it
+         # 2026-09-12 追加。中身のあるアプリを 1 本入れるための種:
+         "xios-fonts-noto",   # フォントが 1 つも入っていなかった。ドックが頭文字しか描けないのもこれ
+         "gnome-text-editor", # GTK4 のテキストエディタ。打った文字が出る窓(GTK4 本体は nautilus 経由で既に入っている)
+         "mesa-demos",        # Wayland の OpenGL 実演。動く絵が出るかを一発で見る
          ]
 # NOT seeded: com.max.xios (脱獄機用の表示アプリ Xios.app)。XiOSLite の Swift ホストが同じ役目を果たすので不要。
 #   同梱すると jb/Applications/Xios.app という入れ子の .app ができ、LiveContainer の署名器が
