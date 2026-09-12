@@ -50,9 +50,21 @@ if ($Release) {
 } else {
     # ---- 開発ビルド: コミット/push してから workflow_dispatch ----
     if (-not $NoPush) {
-        git add -A
-        if (git status --porcelain) {
-            git commit -q -m "build: $Name" 2>&1 | Out-Null
+        # 作りかけを巻き込まないよう、このアプリと共有ツールだけを commit する
+        # (以前 git add -A で、別作業中のエージェントが書いた途中のファイルを
+        #  ビルドに載せかけた。何を積んだかは下に出す)
+        git add "apps/$Name" tools docs .github 2>&1 | Out-Null
+        if (git diff --cached --quiet) {
+            Write-Host "commit するものなし (HEAD をビルドします)"
+        } else {
+            Write-Host "--- この commit に載るもの ---"
+            git diff --cached --name-only | ForEach-Object { Write-Host "  $_" }
+            git commit -q -m "build: $Name"
+        }
+        $stray = git status --porcelain
+        if ($stray) {
+            Write-Host "--- commit していない変更 (ビルドには載りません) ---"
+            $stray | ForEach-Object { Write-Host "  $_" }
         }
         git push -q origin main 2>&1 | Out-Null
     }

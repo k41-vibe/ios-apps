@@ -8,6 +8,7 @@ GUI(iosc/foot/GTK)は G2 以降。
 ## 起動時に何をするか
 
 1. `Frameworks/libLCsys.dylib` を dlopen し `lcsys_init(bundle, HOME, TMPDIR, log_fd)` を呼ぶ
+   (この中で `lcsys_install_xpc_shim()` = metal-event-broker の肩代わりも入る。後述)
 2. パイプを 1 本作り、その書き込み側を **fd 1 と 2 に dup2**(プロセス全体)。読み取り側を
    バックグラウンドスレッドで読んでコンソールに流す
 3. G1 テスト列を順に `lcsys_spawn` → `lcsys_wait`:
@@ -31,11 +32,12 @@ xiOS の Mach-O は全部 `/usr/lib/libSystem.B.dylib` を `LC_LOAD_DYLIB` し�
 `tools/xios/relink.py --libsystem-shim libLCsys.dylib`(stage.py が全 Mach-O に適用)で
 その 1 行を `@rpath/libLCsys.dylib` に書き換える(cmdsize 内、32 バイト枠に収まる)。
 
-`libLCsys.dylib` は `apps/XiOSLite/native/*.c` から postbuild.sh が macOS ランナー上で
+`libLCsys.dylib` は `apps/XiOSLite/native/*.c` + `native/*.m` から postbuild.sh が macOS ランナー上で
 
 ```
 clang -target arm64-apple-ios16.0 -isysroot $SDK -O2 -dynamiclib \
-      -install_name @rpath/libLCsys.dylib -Wl,-reexport-lSystem native/*.c -o Frameworks/libLCsys.dylib
+      -install_name @rpath/libLCsys.dylib -Wl,-reexport-lSystem native/*.c native/*.m \
+      -framework Foundation -framework Metal -lobjc -o Frameworks/libLCsys.dylib
 ```
 
 とビルドする(失敗時は `-Wl,-reexport_library,$SDK/usr/lib/libSystem.B.tbd` を試す。
@@ -202,6 +204,55 @@ iosc が生きている間ほかのコマンドが一切動かなくなる。
 この段階では絵も入力もまだ無い。**iosc はどこかで失敗するのが期待される結果**で、
 見たいのは「どこまで進んだか」。ログは 1 行ごとに fsync しているので、iosc のスレッドが
 落ちても最後の行まで残る。
+
+## metal-event-broker の肩代わり(`native/xpcshim.m`)
+
+iosc は起動時に、ANGLE から取った `id<MTLSharedEvent>` の `MTLSharedEventHandle` を 32 バイトの
+トークン付きで **XPC サービス `com.max.xios.metal-event-broker`** に登録する。脱獄機ではこれは
+root の LaunchDaemon で、こちらでは登録できない。**フェンス無しで進む経路はソースに無い**ので、
+publish に失敗した時点で
+
+```
+xios_metal_sync_create_event が NULL
+ → iosc_gl.c:318 "output release timeline unavailable"
+ → iosc.c:6921   "FATAL: GPU compositor initialization failed" → exit 1
+```
+
+と落ちる(`tools/xios/iosc-host-protocol.md` 第 4 節)。
+
+**全部 1 プロセスなので、イベントは直接手渡せばいい。** ただしブローカーのコードは iosc の像に
+静的リンクされていて C の呼び出しは直接分岐なので、シンボル置換では横取りできない。
+**サービスへ行く道だけが Objective-C で、ObjC のメッセージ送信は必ず動的解決される**ので、そこを取る。
+
+`lcsys_init` が `lcsys_install_xpc_shim()`(`dispatch_once` で 1 回だけ)を呼び、`NSXPCConnection` の
+メソッドを 3 つ入れ替える。元の実装はファイル static に保持し、ブローカー以外の接続はそのまま流す。
+
+| 入れ替えるメソッド | すること |
+|---|---|
+| `initWithMachServiceName:options:` | 元を呼んでから、返ってきた接続に `objc_setAssociatedObject` でサービス名を貼る |
+| `synchronousRemoteObjectProxyWithErrorHandler:` | 名前が `com.max.xios.metal-event-broker` のときだけ自前スタブを返す(**エラーハンドラは呼ばない**)。他は元へ |
+| `remoteObjectProxyWithErrorHandler:` | 同上(別経路で呼ばれた場合の保険) |
+
+`NSXPCConnection` クラス自体が無い場合(サンドボックス下の iOS アプリで有りうる)は、
+`objc_allocateClassPair` でその名前の最小クラスを作る(`initWithMachServiceName:options:` /
+`setRemoteObjectInterface:` / `resume` / `invalidate` / 2 つの proxy getter)。どちらの道を通ったかは
+ログに 1 行出る。
+
+スタブ `LCMetalEventBroker` は `NSData`(トークン)→ ハンドルの辞書を `NSLock` で守るだけ:
+
+- `publishHandle:token:withReply:` → 辞書に入れて `reply(YES)`。辞書が retain するのでハンドルは
+  プロセスの寿命まで生きる
+- `copyHandleForToken:withReply:` → 引いて `reply(handle)`(無ければ nil)
+
+**返答ブロックは必ずその場で(同期・戻る前に)呼ぶ**。呼び出し側は `__block` のローカルを呼び出し
+直後に読み、`stored == NO` なら最大 4 回やり直す作りだから。ログには毎回トークンの先頭 4 バイトと
+辞書のサイズが出る(`xpcshim: publish token=xxxxxxxx table=1`)。
+
+`MTLSharedEventHandle` は `id` として扱い `<Metal/Metal.h>` は取り込まない。こちらは中身を一切
+見ず、預かって返すだけなので、ヘッダもクラスの有無の心配も要らない。retain/release は手動(ARC 無し)。
+
+Swift 側は `lcsys_init` のあとに `dlsym(h, "lcsys_install_xpc_shim")` を引いてログに出す。
+**`無し` と出たら古い libLCsys.dylib** で、iosc はフェンスを publish できずに落ちる。
 
 ## ビルド
 
