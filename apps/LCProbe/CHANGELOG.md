@@ -5,6 +5,16 @@ LiveContainer(JIT-less)の実機能力を測る計測アプリ。結果は `tool
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-09-11
+
+dylib 100 本版(当時は LCProbeS という別アプリ。tag `lcprobe-v0.0.2`, commit `5f4a866`)。
+**G0 の計測を取った版**。結果は `tools/xios/G0-results.md`。
+
+## [0.0.1] - 2026-09-11
+
+dylib 800 本版(tag `lcprobe-v0.0.1`, commit `70e28e7`)。LiveContainer の署名工程が耐えられず
+実機で開けなかった。この失敗自体が「署名は本数に上限がある」という G0 の結果になった。
+
 ### Added
 - 版番号・ビルド番号・コミットを画面に表示(`AppVersion`)
 
