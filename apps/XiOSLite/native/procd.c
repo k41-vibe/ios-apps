@@ -54,6 +54,7 @@ struct lc_proc {
 
 static pthread_key_t guest_key;
 static pthread_once_t key_once = PTHREAD_ONCE_INIT;
+static pthread_once_t sweep_once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t procs_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct lc_proc *procs;
 static int next_pid = 1000;
@@ -161,6 +162,31 @@ static void free_proc(struct lc_proc *p)
     free(p->guest_path);
     free(p->image_path);
     free(p);
+}
+
+/* Remove leftovers in <tmp>/procd/ from a previous run that was killed before it could
+ * unlink its copies. Called once from lcsys_spawn; failures are not interesting. */
+static void sweep_procd_dir(void)
+{
+    char dir[LCSYS_PATH_MAX], victim[LCSYS_PATH_MAX];
+    struct dirent *e;
+    DIR *d;
+    int n = 0;
+
+    snprintf(dir, sizeof dir, "%s/procd", lcsys_cfg.tmp);
+    d = lcsys_real.opendir ? lcsys_real.opendir(dir) : NULL;
+    if (!d)
+        return;
+    while ((e = lcsys_real.readdir(d)) != NULL) {
+        if (e->d_name[0] == '.')
+            continue;
+        if (snprintf(victim, sizeof victim, "%s/%s", dir, e->d_name) < (int)sizeof victim &&
+            lcsys_real.unlink(victim) == 0)
+            n++;
+    }
+    lcsys_real.closedir(d);
+    if (n)
+        lcsys_log("procd: swept %d leftover image cop%s from %s", n, n == 1 ? "y" : "ies", dir);
 }
 
 /* Copy <image> to <tmp>/procd/<n>-<basename>; returns 0 and fills out.
@@ -345,14 +371,14 @@ static void *guest_thread(void *arg)
 
 int lcsys_spawn(const char *path, char *const argv[], char *const envp[], int fd_out, int fd_err)
 {
-    char guest[LCSYS_PATH_MAX], image[LCSYS_PATH_MAX];
+    char guest[LCSYS_PATH_MAX], image[LCSYS_PATH_MAX], priv[LCSYS_PATH_MAX];
     const struct mach_header_64 *hdr;
     uint64_t entryoff = 0;
     guest_main_fn entry;
     void *handle;
     struct lc_proc *p;
     pthread_attr_t attr;
-    int rc;
+    int rc, first, copied = 0;
 
     (void)fd_out;
     (void)fd_err; /* G1: stdout/stderr are process-global (the Swift side dup2s one pipe onto 1 and 2) */
@@ -361,6 +387,7 @@ int lcsys_spawn(const char *path, char *const argv[], char *const envp[], int fd
         return -1;
     }
     pthread_once(&key_once, make_key);
+    pthread_once(&sweep_once, sweep_procd_dir);
     lcsys_resolve_real();
 
     if (locate_guest(path, guest, sizeof guest, image, sizeof image) != 0) {
@@ -368,31 +395,43 @@ int lcsys_spawn(const char *path, char *const argv[], char *const envp[], int fd
         errno = ENOENT;
         return -1;
     }
-    /* Fresh static state per "process": dyld returns the same image for the same path, so a
-     * second run of ls would reuse gnulib getopt's static cursor (seen on device: "invalid
-     * option -- '`'"). A private copy under tmp/procd/ has a different inode/path and is
-     * loaded as a new image. The copy keeps its code signature, so it loads in JIT-less mode. */
-    if (!getenv("LCSYS_NO_COPY")) {
-        char priv[LCSYS_PATH_MAX];
-        if (make_private_copy(image, priv, sizeof priv) == 0)
+    /* Fresh static state per "process": dyld hands back the SAME image for the same path, so a
+     * second run of ls re-enters main() on top of gnulib getopt's static cursor (seen on device:
+     * "invalid option -- '`'"). A private copy under <tmp>/procd/ is a different inode and loads
+     * as a new image; the copy keeps its code signature, so it works in JIT-less mode.
+     * Only from the second spawn onwards - the first one has nothing stale to escape, and every
+     * copy costs one image that is never unloaded (see the growth note below). */
+    first = first_spawn_of(guest);
+    if (!first && !getenv("LCSYS_NO_COPY")) {
+        if (make_private_copy(image, priv, sizeof priv) == 0) {
             snprintf(image, sizeof image, "%s", priv);
-        else
+            copied = 1;
+        } else {
             lcsys_log("spawn %s: private copy failed (errno %d), using shared image", path, errno);
+        }
     }
     handle = lcsys_real.dlopen(image, RTLD_LOCAL | RTLD_NOW);
     if (!handle) {
         lcsys_log("spawn %s: dlopen(%s) failed: %s", path, image, dlerror());
+        if (copied)
+            lcsys_real.unlink(image);
         errno = ENOEXEC;
         return -1;
     }
-    reset_guest_getopt(handle, guest, first_spawn_of(guest));
+    reset_guest_getopt(handle, guest, first);
     hdr = find_image(image);
     if (!hdr) {
         lcsys_log("spawn %s: loaded but image not found in _dyld list (%s)", path, image);
+        if (copied)
+            lcsys_real.unlink(image);
         errno = ENOEXEC;
         return -1;
     }
-    if (strstr(image, "/procd/"))
+    /* Drop the name now, while the mapping holds the inode: nothing is left behind if the app
+     * is killed later. The image itself stays mapped for the life of the process - we never
+     * dlclose (a guest's atexit handlers live in libc and would dangle), so a long session that
+     * re-runs commands many times keeps growing. Bounded enough for G1/G2; revisit at G3. */
+    if (copied)
         lcsys_real.unlink(image); /* host path: the unlink override would remap it */
     entry = find_entry(hdr, &entryoff);
     if (!entry) {
