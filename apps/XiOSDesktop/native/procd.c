@@ -59,6 +59,8 @@ static pthread_mutex_t procs_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct lc_proc *procs;
 static int next_pid = 1000;
 
+static void free_proc(struct lc_proc *p);
+
 static void make_key(void)
 {
     pthread_key_create(&guest_key, NULL);
