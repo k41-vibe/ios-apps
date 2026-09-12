@@ -10,9 +10,13 @@
 2. `apps/<Name>/Sources/` に SwiftUI で実装する。`project.yml` は必要なときだけ触る
    (権限が要るなら `info.properties` に `NSCameraUsageDescription` 等を足す)
 3. `.\tools\build.ps1 <Name>` — commit/push → workflow_dispatch → 完了待ち →
-   `dist/<Name>.ipa` と `C:\Users\rutoi\SharedFolder\ios-apps\<Name>.ipa` に配置
+   `dist/<Name>.ipa` と `C:\Users\rutoi\SharedFolder\ios-apps\<Name>.ipa` に配置(開発ビルド、版 0.0.YYYYMMDD)
 4. 瑠人さんに「iPhone のファイルApp → SharedFolder/ios-apps/<Name>.ipa を共有 → LiveContainer」
    と伝える。Syncthing(SyncTrayzor)が Windows 側で起動しているか先に確認する
+5. 実機で使ってもらう版は **リリース**として出す: `apps/<Name>/CHANGELOG.md` の `[Unreleased]` を書き、
+   `.\tools\build.ps1 <Name> -Release X.Y.Z`。タグ `<name>-vX.Y.Z` push で CI が GitHub Release を発行する。
+   版の決まり(kioku と同じ Semantic Versioning、ビルド番号 = run 番号、画面に `vX.Y.Z (build N) <commit>`)は
+   `docs/VERSIONING.md`。LiveContainer の一覧に出る版で、どの ipa が入っているかを見分ける
 
 ## 制約
 

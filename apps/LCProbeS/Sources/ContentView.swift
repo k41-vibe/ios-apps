@@ -10,6 +10,7 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 8) {
             Text("LCProbeS (100 dylibs)").font(.title2.bold())
+            Text(AppVersion.string).font(.footnote.monospaced()).foregroundStyle(.secondary)
             HStack {
                 Button("安全な計測を全部") { runSafe() }.buttonStyle(.borderedProminent).disabled(busy)
                 Button("Metal/IOSurface") { startSurface() }.buttonStyle(.bordered).disabled(surfaceProbe != nil)

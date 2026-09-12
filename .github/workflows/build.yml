@@ -1,14 +1,19 @@
 name: build-ipa
 
 on:
-  # push では動かさない: build.ps1 の workflow_dispatch で指定アプリだけ建てる
-  # (push で全アプリを建てると macOS ランナーの無料枠を食う)
+  # 開発ビルド: build.ps1 の workflow_dispatch で指定アプリだけ建てる(ブランチ push では動かさない)
   workflow_dispatch:
     inputs:
       app:
         description: "apps/ 配下のアプリ名 (空なら全部)"
         required: false
         default: ""
+  # リリース: <app小文字>-vX.Y.Z のタグ push で、そのアプリだけ建てて GitHub Release を発行(docs/VERSIONING.md)
+  push:
+    tags: ["*-v[0-9]*"]
+
+permissions:
+  contents: write   # Release の作成に必要(タグ push 時のみ使う)
 
 jobs:
   list:
@@ -16,18 +21,34 @@ jobs:
     outputs:
       apps: ${{ steps.ls.outputs.apps }}
       stage: ${{ steps.ls.outputs.stage }}
+      release: ${{ steps.ls.outputs.release }}
     steps:
       - uses: actions/checkout@v4
       - id: ls
         shell: bash
         run: |
-          want="${{ github.event.inputs.app }}"
-          if [ -n "$want" ]; then
+          release=""
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            # タグ xioslite-v0.1.0 -> app=XiOSLite(大小無視で apps/ を引く), release=0.1.0
+            ref="${{ github.ref_name }}"
+            prefix="${ref%%-v*}"
+            release="${ref##*-v}"
+            want=""
+            for a in $(ls apps); do
+              if [ "$(echo "$a" | tr 'A-Z' 'a-z')" = "$prefix" ]; then want="$a"; fi
+            done
+            [ -n "$want" ] || { echo "::error::タグ $ref に対応するアプリが apps/ にない"; exit 1; }
             apps=$(printf '["%s"]' "$want")
           else
-            apps=$(ls -d apps/*/ | xargs -n1 basename | jq -R . | jq -sc .)
+            want="${{ github.event.inputs.app }}"
+            if [ -n "$want" ]; then
+              apps=$(printf '["%s"]' "$want")
+            else
+              apps=$(ls -d apps/*/ | xargs -n1 basename | jq -R . | jq -sc .)
+            fi
           fi
           echo "apps=$apps" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
           # apps/<app>/stage.txt = needs the xiOS staged tree (ubuntu "stage" job)
           stage=false
           for a in $(echo "$apps" | jq -r '.[]'); do
@@ -91,6 +112,17 @@ jobs:
         working-directory: apps/${{ matrix.app }}
         run: xcodegen generate
 
+      # 版番号(docs/VERSIONING.md): リリースはタグの X.Y.Z、開発ビルドは 0.0.YYYYMMDD。ビルド番号は run 番号
+      - name: Version
+        id: ver
+        run: |
+          rel="${{ needs.list.outputs.release }}"
+          if [ -n "$rel" ]; then marketing="$rel"; else marketing="0.0.$(date -u +%Y%m%d)"; fi
+          echo "marketing=$marketing" >> "$GITHUB_OUTPUT"
+          echo "build=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version $marketing build ${{ github.run_number }} sha $(git rev-parse --short HEAD)"
+
       - name: Build (unsigned)
         working-directory: apps/${{ matrix.app }}
         run: |
@@ -102,6 +134,9 @@ jobs:
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
             -derivedDataPath build \
+            MARKETING_VERSION="${{ steps.ver.outputs.marketing }}" \
+            CURRENT_PROJECT_VERSION="${{ steps.ver.outputs.build }}" \
+            LC_GIT_SHA="${{ steps.ver.outputs.sha }}" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -156,3 +191,42 @@ jobs:
           name: ${{ matrix.app }}.ipa
           path: apps/${{ matrix.app }}/${{ matrix.app }}.ipa
           if-no-files-found: error
+
+      # ---- ここから下はタグ push(リリース)のときだけ ----
+      - name: Release notes (CHANGELOG の該当節 + sha256)
+        if: needs.list.outputs.release != ''
+        working-directory: apps/${{ matrix.app }}
+        run: |
+          ver="${{ needs.list.outputs.release }}"
+          sha256=$(shasum -a 256 "${{ matrix.app }}.ipa" | cut -d' ' -f1)
+          {
+            echo "## ${{ matrix.app }} v$ver"
+            echo
+            if [ -f CHANGELOG.md ]; then
+              awk -v v="$ver" '
+                $0 ~ "^## \\[" v "\\]" { on=1; next }
+                on && /^## \[/ { on=0 }
+                on { print }
+              ' CHANGELOG.md
+            else
+              echo "(CHANGELOG.md なし)"
+            fi
+            echo
+            echo "未署名の iOS アプリ(.ipa)。LiveContainer で取り込むと自分の証明書で署名し直される。"
+            echo "LiveContainer の一覧とアプリ画面に \`v$ver (build ${{ steps.ver.outputs.build }}) ${{ steps.ver.outputs.sha }}\` と出る。"
+            echo
+            echo "- \`${{ matrix.app }}.ipa\` SHA-256: \`$sha256\`"
+            echo "- source: https://github.com/${{ github.repository }}/tree/${{ github.sha }}"
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: Publish Release
+        if: needs.list.outputs.release != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ matrix.app }} v${{ needs.list.outputs.release }}
+          draft: false
+          prerelease: false
+          files: apps/${{ matrix.app }}/${{ matrix.app }}.ipa
+          body_path: apps/${{ matrix.app }}/release-notes.md

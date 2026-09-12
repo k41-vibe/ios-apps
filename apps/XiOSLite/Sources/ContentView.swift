@@ -10,7 +10,8 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            Text("XiOSLite G1").font(.title2.bold())
+            Text("XiOSLite").font(.title2.bold())
+            Text(AppVersion.string).font(.footnote.monospaced()).foregroundStyle(.secondary)
             HStack {
                 TextField("command line", text: $command)
                     .textFieldStyle(.roundedBorder)
@@ -50,6 +51,7 @@ struct ContentView: View {
             guard !started else { return }
             started = true
             let prev = log.previous()
+            log.log("XiOSLite \(AppVersion.string)")
             log.log(prev.isEmpty ? "--- first launch ---"
                                  : "--- launch (previous log \(prev.split(separator: "\n").count) lines) ---")
             runTests()
