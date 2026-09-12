@@ -142,6 +142,9 @@ struct ContentView: View {
     private func openScreen() {
         if screen != nil {   // 一度繋いだら以後は切り替えるだけ
             mode = .screen
+            // ただしクライアントが全部落ちていると黒いままなので、そこだけ見ておく
+            let r = ensureRunner()
+            Thread { r.ensureClient() }.start()
             return
         }
         guard !opening else { return }

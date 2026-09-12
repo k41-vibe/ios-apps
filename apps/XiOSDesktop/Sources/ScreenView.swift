@@ -99,6 +99,8 @@ final class ScreenClient: NSObject, MTKViewDelegate {
     private var disconnected = false
     private var firstFrameLogged = false
     private var releaseErrors = 0
+    // DIRTY が 1 件も来ないまま空回りした draw の回数。黙って黒いままになるのを防ぐ
+    private var idleDraws = 0
     // finish() は描画スレッド(描けなかったとき)と Metal の完了ハンドラの両方から
     // 呼ばれるので、その中身だけは直列化する
     private let finishLock = NSLock()
@@ -173,6 +175,7 @@ final class ScreenClient: NSObject, MTKViewDelegate {
         view.framebufferOnly = true
         view.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         lastReport = Date()
+        seedFirstSurface()
         // コンソールと画面を行き来すると makeUIView がもう一度呼ばれる。シェーダの
         // 実行時コンパイルは安くないので、一度作れていたら作り直さない。
         if pipeline != nil { return }
@@ -221,6 +224,22 @@ final class ScreenClient: NSObject, MTKViewDelegate {
         return tex
     }
 
+    // DIRTY を待たずに、握手で受け取った面をそのまま 1 枚貼っておく。
+    // iosc は自分の表側のバッファに描き続けているので、フェンス無しで読むと
+    // 破れて見えることはあるが、「何も出ない」と「出るが通知が来ない」を
+    // 実機で切り分けられる。DIRTY が 1 件来た時点で普通の経路に上書きされる。
+    private func seedFirstSurface() {
+        guard current == nil, let conn = conn else { return }
+        for id in UInt32(1)...UInt32(3) where api.surface(conn, id) != nil {
+            if let t = texture(for: id) {
+                current = t
+                currentId = id
+                log.log("画面: DIRTY 待ちの間、面 id \(id) をそのまま貼っておく")
+                return
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- MTKViewDelegate
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
@@ -263,8 +282,18 @@ final class ScreenClient: NSObject, MTKViewDelegate {
               let cb = queue.makeCommandBuffer() else {
             // 描けなかったフレームも ack は返す
             finish(batch)
+            // 何も出ないまま黙るのが一番困る(実機 2026-09-12)。理由を 1 度だけ書く
+            idleDraws += 1
+            if idleDraws == 120 || idleDraws == 1800 {
+                // currentDrawable は読むたびに取りに行くので、ここでは触らない
+                let why = pipeline == nil ? "pipeline が無い"
+                    : (newest ?? current) == nil ? "DIRTY が 1 件も来ていない(クライアントは居る?)"
+                    : "drawable か command buffer が取れない"
+                log.log("画面: \(idleDraws) 回空回り: \(why) dirty 累計 \(dirtyTotal) 面 \(api.count(conn)) 枚")
+            }
             return
         }
+        idleDraws = 0
         // フェンス: iosc の描き込みが終わるまで GPU を待たせる(第 4 節)。
         // encodeWaitForEvent はエンコーダを開く**前**に積むこと(開いている最中に
         // 呼ぶと Metal が落とす)。
