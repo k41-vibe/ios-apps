@@ -6,6 +6,13 @@
 ## [Unreleased]
 
 ### Added
+- **metal-event-broker(root の XPC サービス)の肩代わり** `native/xpcshim.m`。iosc は起動時に
+  Metal のフェンスをこのサービスに登録できないと `FATAL: GPU compositor initialization failed` で
+  落ちる(フェンス無しの経路はソースに無い)。全部同一プロセスなので、`NSXPCConnection` の
+  `initWithMachServiceName:options:` と 2 つの proxy getter を入れ替えて、サービス名が
+  `com.max.xios.metal-event-broker` のときだけプロセス内のテーブル(トークン → ハンドル)を返す。
+  クラス自体が無い環境では同名の最小クラスを合成する。`lcsys_init` が導入し、Swift 側は
+  `dlsym(lcsys_install_xpc_shim)` の有無をログに出す(古い libLCsys の見分け)
 - 戻ってこないゲストを起こす経路: `Runner.start()`(spawn したら wait しない)と
   `Runner.status()` / `lcsys_alive()`(join も回収もせずに生死と終了コードを見る)
 - 「iosc を起動」ボタン。Wayland コンポジタ `iosc` を、作業ディレクトリとソケットのパスを

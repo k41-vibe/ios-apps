@@ -172,6 +172,14 @@ final class Runner {
         }
         let rc = initFn(bundle, home, tmp, pipeWrite)
         log.log("lcsys_init -> \(rc); bundle=\(bundle)")
+        // metal-event-broker(root の XPC)の肩代わり。lcsys_init が中で入れているので
+        // ここでは「その libLCsys に入っているか」だけ見る。無ければ古い dylib で、
+        // iosc は起動時に FATAL(iosc.c:6921)で落ちる
+        if dlsym(h, "lcsys_install_xpc_shim") != nil {
+            log.log("lcsys_install_xpc_shim: あり(lcsys_init が導入済み。詳細は xpcshim: の行)")
+        } else {
+            log.log("lcsys_install_xpc_shim: 無し ← 古い libLCsys.dylib。iosc は fence 無しで落ちる")
+        }
         log.log("home=\(home) tmp=\(tmp)")
         let fw = (try? FileManager.default.contentsOfDirectory(atPath: bundle + "/Frameworks").count) ?? -1
         let jb = FileManager.default.fileExists(atPath: bundle + "/jb/usr/bin/ls.lc")

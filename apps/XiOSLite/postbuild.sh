@@ -2,7 +2,7 @@
 # Called by the workflow after xcodebuild, before packaging.
 #   $APP_DIR   = path to the built XiOSLite.app
 #   $STAGE_DIR = output of tools/xios/stage.py (downloaded artifact "xios-stage")
-# 1. builds Frameworks/libLCsys.dylib from native/*.c (re-exports libSystem)
+# 1. builds Frameworks/libLCsys.dylib from native/*.c + native/*.m (re-exports libSystem)
 # 2. copies the staged tree: Frameworks/* (relinked Mach-Os) and jb/ (data + @LC stubs)
 set -euo pipefail
 : "${APP_DIR:?APP_DIR not set}"
@@ -15,7 +15,16 @@ OUT="$FW/libLCsys.dylib"
 
 CFLAGS=(-target arm64-apple-ios16.0 -isysroot "$SDK" -O2 -Wall -Wno-deprecated-declarations
         -fvisibility=default -dynamiclib -install_name @rpath/libLCsys.dylib)
-SRCS=("$HERE"/native/*.c)
+# native/xpcshim.m is Objective-C written for MANUAL retain/release: do NOT add
+# -fobjc-arc (MRR is clang's default for .m, so no flag is needed either way).
+# Foundation/libobjc are what the NSXPCConnection swizzle needs; Metal is there because
+# the objects we shuttle are MTLSharedEventHandles (we never name the type, see the
+# file header) and iosc loads Metal regardless.
+LDFLAGS=(-framework Foundation -framework Metal -lobjc)
+shopt -s nullglob
+SRCS=("$HERE"/native/*.c "$HERE"/native/*.m)
+shopt -u nullglob
+[ ${#SRCS[@]} -gt 0 ] || { echo "::error::no sources in $HERE/native"; exit 1; }
 
 # The dylib must RE-EXPORT libSystem (LC_REEXPORT_DYLIB), otherwise guests bound to
 # @rpath/libLCsys.dylib would miss every libc symbol. Two spellings of the flag are
@@ -25,9 +34,9 @@ linked=no
 for attempt in 1 2; do
   if [ $attempt = 1 ]; then flag="-Wl,-reexport-lSystem"; else flag="-Wl,-reexport_library,$SDK/usr/lib/libSystem.B.tbd"; fi
   echo "== building libLCsys.dylib (attempt $attempt: $flag)"
-  echo "clang ${CFLAGS[*]} $flag ${SRCS[*]} -o $OUT"
+  echo "clang ${CFLAGS[*]} $flag ${SRCS[*]} ${LDFLAGS[*]} -o $OUT"
   rm -f "$OUT"
-  if clang "${CFLAGS[@]}" "$flag" "${SRCS[@]}" -o "$OUT"; then
+  if clang "${CFLAGS[@]}" "$flag" "${SRCS[@]}" "${LDFLAGS[@]}" -o "$OUT"; then
     if has_reexport; then linked=yes; break; fi
     echo "== attempt $attempt linked but has no LC_REEXPORT_DYLIB:"
     otool -l "$OUT" | grep -A3 "LC_LOAD_DYLIB\|LC_REEXPORT_DYLIB" || true
@@ -44,7 +53,7 @@ echo "== libLCsys.dylib load commands"
 otool -L "$OUT"
 otool -l "$OUT" | grep -A2 LC_REEXPORT_DYLIB
 echo "== exported overrides (expect open/stat/exit/dlopen/lcsys_*):"
-nm -gU "$OUT" | grep -E ' _(open|stat|lstat|exit|_exit|fork|dlopen|realpath|posix_spawn|lcsys_init|lcsys_spawn|lcsys_wait)($|[$])' || true
+nm -gU "$OUT" | grep -E ' _(open|stat|lstat|exit|_exit|fork|dlopen|realpath|posix_spawn|lcsys_init|lcsys_spawn|lcsys_wait|lcsys_install_xpc_shim)($|[$])' || true
 
 echo "== copying staged tree from $STAGE_DIR"
 test -d "$STAGE_DIR/Frameworks" || { echo "::error::$STAGE_DIR/Frameworks missing"; exit 1; }

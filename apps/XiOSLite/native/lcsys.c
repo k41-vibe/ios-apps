@@ -143,6 +143,9 @@ int lcsys_init(const char *bundle_path, const char *home, const char *tmp, int l
     lcsys_log("init bundle=%s home=%s tmp=%s log_fd=%d real_open=%p sys_handle=%p fork_errno=%d",
               lcsys_cfg.bundle, lcsys_cfg.home, lcsys_cfg.tmp, log_fd, (void *)lcsys_real.open, sys_handle,
               lcsys_cfg.fork_errno);
+    /* Must be in place before any guest starts: iosc reaches the Metal fence broker
+     * through NSXPCConnection at startup and aborts if the publish fails (xpcshim.m). */
+    lcsys_install_xpc_shim();
     return 0;
 }
 

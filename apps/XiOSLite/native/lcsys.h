@@ -47,6 +47,12 @@ int lcsys_wait(int pid, int *status);
 int lcsys_alive(int pid, int *status);
 int lcsys_init(const char *bundle_path, const char *home, const char *tmp, int log_fd);
 void lcsys_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+/* xpcshim.m: replace the com.max.xios.metal-event-broker XPC service (a root
+ * LaunchDaemon we cannot register) with an in-process table, by swizzling
+ * NSXPCConnection. Idempotent; lcsys_init calls it, so iosc always finds it in
+ * place. Without it iosc dies at startup (iosc.c:6921 "FATAL: GPU compositor
+ * initialization failed"); see tools/xios/iosc-host-protocol.md section 4. */
+void lcsys_install_xpc_shim(void);
 
 /* Guest path -> host path. Pure string mapping, no filesystem access.
  * Returns out (always NUL-terminated; truncated silently at cap). */
