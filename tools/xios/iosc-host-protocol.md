@@ -136,15 +136,57 @@ xios_metal_sync_create_event が NULL
 
 同一プロセスで `id<MTLSharedEvent>` を直接共有するのは、ここでは**まさに正しい**。
 
-**差し替え方**: これらは iosc の像の中に静的リンクされているので、シンボル置換(二段名前空間)では
-横取りできない(像内の呼び出しは直接分岐)。実現手段の候補:
+**差し替え方**: `XiosMetalEventBroker.m` は **iosc の実行ファイルに直接リンクされている**
+(`wayland/build-iosc.sh:366` の `$CC ... -o /out/iosc` に含まれる)。像内の呼び出しは直接分岐なので
+**シンボル置換では横取りできない**。しかしブローカーは `NSXPCConnection` を経由し、Objective-C の
+メッセージ送信は必ず動的解決されるので、**そこを入れ替えれば バイナリを 1 バイトも触らずに済む**。
+libLCsys は RTLD_GLOBAL で読まれるのでプロセス全体に効く。
 
-1. **Objective-C のメソッド入れ替え(有力)**。ブローカーは `NSXPCConnection` を経由するので、
-   ObjC のメッセージ送信は必ず動的解決される。`NSXPCConnection` の該当メソッドを入れ替えて、
-   サービス名が `com.max.xios.metal-event-broker` のときだけ自前のローカル実装を返せば、
-   バイナリを 1 バイトも触らずに済む。libLCsys は RTLD_GLOBAL なのでプロセス全体に効く
-2. `relink.py` で当該関数の先頭を書き換える(バイナリ改変。最後の手段)
-3. iosc を自前でソースからビルドする(`tools/xios/iosc-inprocess-notes.md` の最小改変一覧。最も重い)
+### 入れ替えに必要な事実
+
+`XiosMetalEventBroker.h:25-31`:
+
+```objc
+@protocol XiosMetalEventBrokerProtocol
+- (void)publishHandle:(MTLSharedEventHandle *)handle
+                token:(NSData *)token
+            withReply:(void (^)(BOOL stored))reply;
+- (void)copyHandleForToken:(NSData *)token
+                 withReply:(void (^)(MTLSharedEventHandle *handle))reply;
+@end
+```
+
+`XiosMetalEventBroker.m:13-48`(呼び出しごとに新しい接続を作り、使い回さない):
+
+```objc
+Class cls = NSClassFromString(@"NSXPCConnection");
+SEL initSelector = NSSelectorFromString(@"initWithMachServiceName:options:");
+if (!cls || ![cls instancesRespondToSelector:initSelector]) return nil;  // → publish 失敗 → 起動中止
+connection = objc_msgSend([cls alloc], initSelector,
+                          @"com.max.xios.metal-event-broker",
+                          (NSUInteger)NSXPCConnectionPrivileged /* 1<<12 */);
+connection.remoteObjectInterface = <上のプロトコルの NSXPCInterface>;
+[connection resume];
+id proxy = [connection synchronousRemoteObjectProxyWithErrorHandler:^(NSError *e){ *failed = YES; }];
+```
+
+- トークン 32 バイトは**呼び出し側**が `arc4random_buf` で作る。`stored == NO` かつ `failed == NO` なら
+  新しいトークンで最大 4 回まで再試行(`.m:74-76`)
+- `publish` の戻りは int。iosc は 1 を要求する
+- **返信ブロックは `__block` の局所変数を呼び出し直後に読むので、同期的にその場で呼ばなければならない**
+- イベント本体は `static struct metal_sync_state s_state`(`xios_metal_sync.m:31-35`)と
+  `iosc_gl.c:62 static void *s_release_event` に入る。どちらもファイル static で **dlsym できない**
+
+### 実装
+
+`apps/XiOSLite/native/xpcshim.m` で `NSXPCConnection` の
+`initWithMachServiceName:options:` と `synchronousRemoteObjectProxyWithErrorHandler:` を入れ替え、
+サービス名が一致したときだけ自前のローカル実装(辞書 1 つ)を返す。`NSXPCConnection` クラス自体が
+無い場合に備えて、その名前でクラスを登録する経路も用意する。
+
+iosc のソース 27 本を `NSXPCConnection|bootstrap_look_up|xpc_connection|MachService|mach_lookup` で
+検索した結果、**XPC/mach サービスの利用はこの 1 か所だけ**。他の特権操作は `getpwnam`/`chown` の
+フォールバックのみで、すべて非致命。
 
 ## 5. 解放の経路
 
