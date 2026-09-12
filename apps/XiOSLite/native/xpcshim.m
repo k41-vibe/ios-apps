@@ -97,6 +97,16 @@ static void lc_token_hex(id token, char *out, size_t cap)
 /* --------------------------------------------------------------- the stub */
 
 @interface LCMetalEventBroker : NSObject
+/* +1, or nil. Used by lcsys_shared_event_for_token() below. */
+- (id)copyHandleForTokenData:(NSData *)token count:(unsigned long *)count;
+@end
+
+/* -newSharedEventWithHandle: is id<MTLDevice>'s, but importing <Metal/Metal.h> here
+ * would drag the whole framework in for one selector (see the file header: the handles
+ * stay opaque on purpose). Declaring it on NSObject is enough for the compiler to emit
+ * the right message send, and the "new" family keeps the +1 return under MRR. */
+@interface NSObject (LCMetalDevice)
+- (id)newSharedEventWithHandle:(id)handle;
 @end
 
 @implementation LCMetalEventBroker {
@@ -146,6 +156,20 @@ static void lc_token_hex(id token, char *out, size_t cap)
         reply(stored);
 }
 
+- (id)copyHandleForTokenData:(NSData *)token count:(unsigned long *)count
+{
+    id handle = nil;
+
+    if (![token isKindOfClass:[NSData class]])
+        return nil;
+    [_lock lock];
+    handle = [[_table objectForKey:token] retain];
+    if (count)
+        *count = (unsigned long)[_table count];
+    [_lock unlock];
+    return handle;                /* +1 */
+}
+
 - (void)copyHandleForToken:(id)token withReply:(lc_handle_reply)reply
 {
     char hex[9];
@@ -153,12 +177,7 @@ static void lc_token_hex(id token, char *out, size_t cap)
     unsigned long count = 0;
 
     lc_token_hex(token, hex, sizeof hex);
-    if ([token isKindOfClass:[NSData class]]) {
-        [_lock lock];
-        handle = [[_table objectForKey:(NSData *)token] retain];
-        count = (unsigned long)[_table count];
-        [_lock unlock];
-    }
+    handle = [self copyHandleForTokenData:(NSData *)token count:&count];
     lcsys_log("xpcshim: lookup token=%s -> %s table=%lu", hex, handle ? "hit" : "MISS", count);
     if (reply)
         reply(handle);            /* inline; nil when absent, like the real broker */
@@ -364,4 +383,54 @@ void lcsys_install_xpc_shim(void)
     static dispatch_once_t once;
 
     dispatch_once(&once, ^{ lc_install_once(); });
+}
+
+/* ------------------------------------- the client half: token -> MTLSharedEvent */
+
+/* The in-process replacement for xios_metal_event_broker_copy_event(device, token, 32)
+ * (XScreen.swift:1376-1407 calls it for both timelines). iosc published the handle
+ * into the very same table above, so this is a dictionary lookup plus one
+ * -newSharedEventWithHandle:. Same process, same device, so the event we hand back is
+ * the one iosc is signalling.
+ *
+ * Returns +1 (the caller owns it); NULL when the token is unknown or the device does
+ * not answer the selector. Callable from any thread. */
+void *lcsys_shared_event_for_token(void *mtl_device, const unsigned char *token, size_t len)
+{
+    id device = (id)mtl_device;
+    NSData *key;
+    id handle;
+    id event = nil;
+    unsigned long count = 0;
+    char hex[9];
+
+    if (!device || !token || len == 0) {
+        lcsys_log("xpcshim: shared_event_for_token called with device=%p token=%p len=%zu", mtl_device,
+                  (const void *)token, len);
+        return NULL;
+    }
+    /* iosc may not have run yet when a caller asks first; installing is idempotent. */
+    lcsys_install_xpc_shim();
+    if (!lc_stub)
+        return NULL;
+
+    @autoreleasepool {
+        key = [[NSData alloc] initWithBytes:token length:len];
+        lc_token_hex(key, hex, sizeof hex);
+        handle = [lc_stub copyHandleForTokenData:key count:&count];
+        [key release];
+        if (!handle) {
+            lcsys_log("xpcshim: shared event token=%s MISS (table=%lu) - iosc has not published it",
+                      hex, count);
+            return NULL;
+        }
+        if ([device respondsToSelector:@selector(newSharedEventWithHandle:)])
+            event = [device newSharedEventWithHandle:handle];   /* +1 */
+        else
+            lcsys_log("xpcshim: %s does not respond to newSharedEventWithHandle:",
+                      class_getName(object_getClass(device)));
+        [handle release];
+        lcsys_log("xpcshim: shared event token=%s -> %s (table=%lu)", hex, event ? "ok" : "FAILED", count);
+    }
+    return (void *)event;
 }

@@ -73,6 +73,8 @@ final class Runner {
     typealias AliveFn = @convention(c) (Int32, UnsafeMutablePointer<Int32>?) -> Int32
 
     let log: ConsoleLog
+    // dlopen した libLCsys.dylib。ScreenView が xs_* をここから引く
+    private(set) var libHandle: UnsafeMutableRawPointer?
     private var spawnFn: SpawnFn?
     private var waitFn: WaitFn?
     private var aliveFn: AliveFn?
@@ -157,6 +159,7 @@ final class Runner {
             log.log("dlopen(libLCsys) FAILED: \(String(cString: dlerror()))")
             return false
         }
+        libHandle = h
         guard let pi = dlsym(h, "lcsys_init"), let ps = dlsym(h, "lcsys_spawn"), let pw = dlsym(h, "lcsys_wait") else {
             log.log("dlsym(lcsys_*) FAILED: \(String(cString: dlerror()))")
             return false
@@ -338,6 +341,49 @@ final class Runner {
         fflush(nil)
         log.log("iosc 2 秒後: \(status())  [footprint \(footprintMB()) MB]")
         logDirs()
+    }
+
+    // ------------------------------------------------------------ 画面(ddx)
+
+    // クライアント(ScreenView)が繋ぎに行く先。ioscArgv() の -ddx-sock と同じ文字列。
+    func ddxPath() -> String { xiosDir + "/ddx" }
+
+    // start() で起こした iosc がまだ生きているか
+    func ioscAlive() -> Bool {
+        startedLock.lock()
+        let pids = started.filter { $0.value == "iosc" }.keys.sorted()
+        startedLock.unlock()
+        guard let aliveFn = aliveFn else { return !pids.isEmpty }   // 古い libLCsys: pid の有無で代用
+        for p in pids {
+            var st: Int32 = -1
+            if aliveFn(p, &st) == 1 { return true }
+        }
+        return false
+    }
+
+    // 「画面」ボタンの前段: iosc が居なければ起こし、ddx ソケットが現れるまで最大 10 秒待つ。
+    // startIosc() が 2 秒眠るので、**必ずバックグラウンドスレッドから**呼ぶこと。
+    func ensureIoscReady() -> Bool {
+        guard setup() else { log.log("画面: setup 失敗"); return false }
+        if ioscAlive() {
+            log.log("画面: iosc は起動済み(\(status()))")
+        } else {
+            startIosc()
+        }
+        let path = ddxPath()
+        var waited = 0
+        while waited <= 10_000 {
+            if FileManager.default.fileExists(atPath: path) {
+                log.log("画面: ddx ソケットあり \(path)(待ち \(waited) ms)")
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+            waited += 100
+        }
+        log.log("画面: ddx ソケットが 10 秒経っても現れない: \(path)")
+        log.log("画面: \(status())")
+        logDirs()
+        return false
     }
 
     // G1 関門: ls / bash / cat / ls 再実行(静的状態の回帰)/ readdir の .lc 剥がし / pkg-config
