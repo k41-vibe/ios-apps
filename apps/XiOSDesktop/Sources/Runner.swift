@@ -180,6 +180,8 @@ final class Runner {
     }
     /// 経路変換の追跡。iosc を起こす前に立てること(環境変数はプロセス全体で 1 つ)
     static var traceEnabled = false
+    /// fork の再現(スタック複製)を使うか。暴れたときに実機から切れるようにしておく
+    static var forkCloneEnabled = true
 
     let home: String
     let tmp: String
@@ -210,6 +212,8 @@ final class Runner {
             "IOSC_DEBUG": "1",
             // 経路変換の 1 件ずつの記録。毎秒数千行出るので既定は切る(「詳細ログ」で入れる)
             "LCSYS_TRACE": Runner.traceEnabled ? "1" : "0",
+            // fork をスタック複製で再現する。"fail" にすると従来どおり -1 を返す
+            "LCSYS_FORK": Runner.forkCloneEnabled ? "clone" : "fail",
             "IOSC_IGNORE_ACTIVE_SESSION": "1",   // /var/jb/tmp/xios-active-session は読めない
             "XIOS_RUNTIME_TMP": runtimeDir,      // クライアント側のログ置き場 (XSurface.c)
             "XDG_DATA_DIRS": "/var/jb/usr/share",

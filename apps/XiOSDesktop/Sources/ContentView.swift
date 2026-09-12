@@ -127,6 +127,11 @@ struct ContentView: View {
                     get: { Runner.traceEnabled },
                     set: { Runner.traceEnabled = $0; setenv("LCSYS_TRACE", $0 ? "1" : "0", 1) }
                 )).font(.footnote).fixedSize()
+                Toggle("fork 再現", isOn: Binding(
+                    get: { Runner.forkCloneEnabled },
+                    set: { Runner.forkCloneEnabled = $0
+                           setenv("LCSYS_FORK", $0 ? "clone" : "fail", 1) }
+                )).font(.footnote).fixedSize()
                 Spacer()
             }
             ScrollViewReader { proxy in
