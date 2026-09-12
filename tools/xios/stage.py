@@ -230,20 +230,25 @@ def extract_deb(deb_path, root, pkg, records):
                 shutil.copyfileobj(src, out, 1 << 20)
             if orig in records["files"] and records["files"][orig]["package"] != pkgname:
                 records["overwritten"].append({"path": orig, "first": records["files"][orig]["package"], "then": pkgname})
-            records["files"][orig] = {"package": pkgname, "dest": dest, "size": m.size, "rootful": rootful}
+            records["seq"] += 1
+            records["files"][orig] = {"package": pkgname, "dest": dest, "size": m.size, "rootful": rootful,
+                                      "seq": records["seq"]}
         elif m.issym():
             target = m.linkname
             if rootful and target.startswith("/") and not target.startswith("/var/jb/"):
                 target = "/var/jb" + target  # rootful deb: absolute targets are relative to the package root
+            records["seq"] += 1
             records["symlinks"].append({"path": orig, "dest": dest, "target": target, "package": pkgname,
-                                        "rootful": rootful})
+                                        "rootful": rootful, "seq": records["seq"]})
         elif m.islnk():
             # hard link: copy the already-extracted link source
             _rootful, src_rel = split_member(m.linkname)
             src = safe_join(root, src_rel)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             shutil.copyfile(src, dest)
-            records["files"][orig] = {"package": pkgname, "dest": dest, "size": os.path.getsize(dest), "rootful": rootful}
+            records["seq"] += 1
+            records["files"][orig] = {"package": pkgname, "dest": dest, "size": os.path.getsize(dest),
+                                      "rootful": rootful, "seq": records["seq"]}
             records["hardlinks"].append({"path": orig, "source": m.linkname, "package": pkgname})
         else:
             records["skipped"].append({"package": pkgname, "path": m.name, "type": str(m.type)})
@@ -381,6 +386,47 @@ def classify_machos(records):
             kind, hdr = None, "skipped: filetype %s" % hdr["filetype_name"]
         found.append((orig, info, kind, hdr))
     return found, shipped
+
+
+def reconcile_records(records):
+    """Same guest path shipped by one package as a real file and by another as a symlink.
+
+    records["files"] is a dict (last write wins) but records["symlinks"] is a list, and
+    materialise_symlinks() runs AFTER relinking - so a stale symlink record would overwrite the
+    ".lc" stub that relink_all() just wrote for the real file (or replace a real data file with a
+    stub). Keep only whichever record was extracted last, by the "seq" counter, and drop the other.
+    Also collapses duplicate symlink records for one path.
+    """
+    latest = {}
+    for s in records["symlinks"]:
+        cur = latest.get(s["path"])
+        if cur is None or s["seq"] > cur["seq"]:
+            latest[s["path"]] = s
+    dropped_links, dropped_files = [], []
+    keep = []
+    for path, s in latest.items():
+        f = records["files"].get(path)
+        if f and f["seq"] > s["seq"]:
+            dropped_links.append({"path": path, "symlink_from": s["package"], "file_from": f["package"]})
+            continue
+        if f:
+            dropped_files.append({"path": path, "file_from": f["package"], "symlink_from": s["package"]})
+            del records["files"][path]
+        keep.append(s)
+    keep.sort(key=lambda x: x["seq"])
+    n_dupes = len(records["symlinks"]) - len(latest)
+    records["symlinks"] = keep
+    records["reconciled"] = {"dropped_symlinks": dropped_links, "dropped_files": dropped_files,
+                             "duplicate_symlinks": n_dupes}
+    for d in dropped_links:
+        log("  RECONCILE %s: real file from %s wins over symlink from %s"
+            % (d["path"], d["file_from"], d["symlink_from"]))
+    for d in dropped_files:
+        log("  RECONCILE %s: symlink from %s wins over real file from %s"
+            % (d["path"], d["symlink_from"], d["file_from"]))
+    if n_dupes:
+        log("  RECONCILE %d duplicate symlink record(s) collapsed" % n_dupes)
+    return records["reconciled"]
 
 
 def relink_all(records, frameworks_dir, collide="prefix", libsystem_shim=None):
@@ -564,6 +610,8 @@ def main(argv=None):
                          "/var/jb/usr/... paths are processed first, so they keep the plain name")
     ap.add_argument("--allow-raw-macho", action="store_true",
                     help="do not fail when a Mach-O file is left under jb/ (default: exit 2 and list them)")
+    ap.add_argument("--allow-link-gaps", action="store_true",
+                    help="未解決の @rpath 依存 / LC_ID_DYLIB 欠落があっても失敗させない")
     ap.add_argument("--symlinks", choices=("auto", "never"), default="auto",
                     help="auto: real symlinks when the OS allows; never: always copy/marker (CI uses never)")
     ap.add_argument("--libsystem-shim", metavar="NAME", default="libLCsys.dylib",
@@ -603,7 +651,7 @@ def main(argv=None):
     log("download: %d debs (%d cached, %d downloaded) in %.1fs" % (len(debs), n_cached, n_dl, time.time() - t0))
 
     # 2. extract
-    records = {"files": {}, "symlinks": [], "hardlinks": [], "skipped": [], "overwritten": []}
+    records = {"files": {}, "symlinks": [], "hardlinks": [], "skipped": [], "overwritten": [], "seq": 0}
     packages = []
     scripts_written = 0
     for deb in debs:
@@ -635,6 +683,7 @@ def main(argv=None):
         log("  NOTE skipped %d unsupported tar entries: %s" % (len(records["skipped"]), records["skipped"][:5]))
 
     # 3+4. relink Mach-Os, write stubs + manifest
+    reconcile_records(records)
     manifest, failures, shipped = relink_all(records, frameworks, args.collide, libsystem_shim)
     aliases, unresolved = add_alias_copies(records, manifest, frameworks, libsystem_shim)
     with open(os.path.join(args.out, "shipped_dylibs.txt"), "w", encoding="utf-8", newline="\n") as f:
@@ -723,6 +772,19 @@ def main(argv=None):
         log("ERROR: jb/ must contain no *.dylib / *.app / *.framework names - LiveContainer's "
             "installer picks those up by name and reports them as unsignable; stubs must be <name>.lc "
             "and packages shipping a nested .app must be dropped from the closure")
+        return 2
+    # Link-time invariants. dlopen(RTLD_NOW) binds everything at load, so a missing @rpath dependency
+    # or a former executable without LC_ID_DYLIB is a guaranteed run-time failure - it must not reach
+    # an .ipa as a line of CI log nobody reads. --allow-link-gaps is the deliberate override.
+    if unresolved and not args.allow_link_gaps:
+        log("ERROR: %d @rpath dependency/ies have no file in Frameworks/: %s"
+            % (len(unresolved), " ".join(unresolved)))
+        log("       add the providing package to closure.py SEEDS, or pass --allow-link-gaps when iOS "
+            "itself ships it in /usr/lib")
+        return 2
+    if n_noid and not args.allow_link_gaps:
+        log("ERROR: %d former executable(s) have no LC_ID_DYLIB; dyld refuses to dlopen those: %s"
+            % (len(n_noid), " ".join(n_noid[:20])))
         return 2
     return 0
 
