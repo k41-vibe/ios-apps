@@ -228,9 +228,10 @@ final class Runner {
             // ioscbg のデスクトップ部品(Storage / Memory / Load / Session)の置き場。
             // 設定ファイルが無いと 1 つも描かれない(実機 2026-09-12「ストレージが出ない」)
             "IOSC_WIDGET_CONFIG": widgetConfigPath,
-            // GTK / Qt のアプリは連絡係(dbus)が居ないと起動を諦めることがある。
-            // 先に場所だけ教えておき、実体は「dbus」ボタンで起こす
-            "DBUS_SESSION_BUS_ADDRESS": "unix:path=" + dbusSocketPath,
+            // dbus の場所はここでは決めない。xiOS のシェルは自分で
+            // <jbroot>/tmp/iosc-shell-bus に 1 本立て、起動するアプリにその場所を
+            // 教える(shell-draw.h の sd_launch)。こちらが先に別の場所を指すと、
+            // 二重に立てる道へ迷い込む
             "SHELL": "/var/jb/usr/bin/bash",
             "USER": "mobile",
         ]
@@ -239,6 +240,27 @@ final class Runner {
     // ------------------------------------------------------------ デスクトップ部品
 
     var widgetConfigPath: String { home + "/iosc-widgets.conf" }
+
+    /// xiOS のシェルは起動するアプリの `XDG_RUNTIME_DIR` を、共有バスの置き場
+    /// (`<jbroot>/tmp/iosc-shell-bus`)に差し替える(`shell-draw.h` の `sd_launch`)。
+    /// Wayland のクライアントは `XDG_RUNTIME_DIR/WAYLAND_DISPLAY` を見るので、
+    /// そのままだとコンポジタが見つからなくなる。置き場を先に作って、そこからも
+    /// 同じソケットが見えるように印(シンボリックリンク)を張っておく。
+    func prepareShellBusDir() {
+        let dir = tmp + "/iosc-shell-bus"
+        let link = dir + "/wayland-0"
+        let target = runtimeDir + "/wayland-0"
+        let fm = FileManager.default
+        // 前回の使い残しが在ると「バスはもう在る」と誤って判断される
+        for n in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] {
+            try? fm.removeItem(atPath: dir + "/" + n)
+        }
+        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        if !fm.fileExists(atPath: link) {
+            do { try fm.createSymbolicLink(atPath: link, withDestinationPath: target) }
+            catch { log.log("バス置き場の印が張れない: \(error.localizedDescription)") }
+        }
+    }
 
     /// ioscbg が読む部品の配置。書式は逆アセンブルで確かめた `名前 x y 有効` の 4 つ組
     /// (`fscanf(f, "%31s %d %d %d")` が 4 を返したときだけ採用し、3 番目は 0 以外なら表示)。
@@ -279,6 +301,7 @@ final class Runner {
         }
         log.log("ロケール: \(Runner.locale)(この名前だけが setlocale を通った)")
         writeWidgetConfig()
+        prepareShellBusDir()
         for (k, v) in environment() { setenv(k, v, 1) }
 
         var fds: [Int32] = [-1, -1]
@@ -561,6 +584,9 @@ final class Runner {
     /// GTK4 のテキストエディタ。**打った文字がその場に出る**はずの窓。
     func startEditor() {
         if !aliveLabels().contains("dbus-daemon") { startDbus() }
+        // 自分で起こすときだけ、自分のバスの場所を教える(ドック経由のときは
+        // xiOS のシェルが自分で決めるので、こちらは黙っている)
+        setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=" + dbusSocketPath, 1)
         startClient("/var/jb/usr/bin/gnome-text-editor", label: "gnome-text-editor", settle: 2.5)
     }
 
