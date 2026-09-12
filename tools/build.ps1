@@ -1,4 +1,4 @@
-# apps/<Name> を GitHub Actions(macOS) でビルドし、.ipa を iPhone 受け渡し用フォルダへ置く
+﻿# apps/<Name> を GitHub Actions(macOS) でビルドし、.ipa を iPhone 受け渡し用フォルダへ置く
 #
 #   開発ビルド : .\tools\build.ps1 XiOSLite            版 0.0.YYYYMMDD、Release は作らない
 #   リリース   : .\tools\build.ps1 XiOSLite -Release 0.1.0
