@@ -240,6 +240,7 @@ struct ContentView: View {
             // 入力は画面と別のソケット。繋がらなくても画面は出るので、失敗しても進む
             client.xin = XInputAPI(handle: handle, log: l)
             client.connectInput(path: r.inputPath())
+            client.connectText(path: r.textPath())
             DispatchQueue.main.async {
                 screen = client
                 mode = .screen
