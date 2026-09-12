@@ -85,6 +85,9 @@ static void resolve_real_once(void)
     lcsys_real.access = (int (*)(const char *, int))find_real("access");
     lcsys_real.faccessat = (int (*)(int, const char *, int, int))find_real("faccessat");
     lcsys_real.opendir = (DIR * (*)(const char *))find_real("opendir");
+    lcsys_real.closedir = (int (*)(DIR *))find_real("closedir");
+    lcsys_real.readdir = (struct dirent * (*)(DIR *))find_real("readdir");
+    lcsys_real.readdir_r = (int (*)(DIR *, struct dirent *, struct dirent **))find_real("readdir_r");
     lcsys_real.readlink = (ssize_t (*)(const char *, char *, size_t))find_real("readlink");
     lcsys_real.realpath = (char *(*)(const char *, char *))
         (sys_handle ? dlsym(sys_handle, "realpath$DARWIN_EXTSN") : NULL);
@@ -161,10 +164,25 @@ int open(const char *path, int oflag, ...)
     return lcsys_real.open(MAPPED(path, buf), oflag, mode);
 }
 
+/* A lookup relative to a real directory fd cannot go through lcsys_resolve_path:
+ * we do not know which directory the fd is. readdir() now hands callers "ls" where
+ * the file on disk is the "ls.lc" stub, and coreutils ls stats what readdir gave it
+ * with fstatat(dirfd(dirp), name, ...) - so the *at() family retries the stub name,
+ * but only for a bare name whose plain lookup already failed with ENOENT. Nothing
+ * outside the jb tree is affected: there are no .lc files there, so the retry misses
+ * and the original ENOENT stands. */
+static int lc_stub_name(const char *path, char *buf, size_t cap)
+{
+    if (!lcsys_ready || !path || !*path || strchr(path, '/') != NULL)
+        return 0;
+    return snprintf(buf, cap, "%s%s", path, LCSYS_STUB_SUFFIX) < (int)cap;
+}
+
 int openat(int fd, const char *path, int oflag, ...)
 {
-    char buf[LCSYS_PATH_MAX];
+    char buf[LCSYS_PATH_MAX], stub[LCSYS_PATH_MAX];
     mode_t mode = 0;
+    int r;
     ENSURE();
     if (oflag & O_CREAT) {
         va_list ap;
@@ -174,7 +192,10 @@ int openat(int fd, const char *path, int oflag, ...)
     }
     if (fd == AT_FDCWD || (path && path[0] == '/'))
         path = MAPPED(path, buf);
-    return lcsys_real.openat(fd, path, oflag, mode);
+    r = lcsys_real.openat(fd, path, oflag, mode);
+    if (r < 0 && errno == ENOENT && !(oflag & O_CREAT) && lc_stub_name(path, stub, sizeof stub))
+        r = lcsys_real.openat(fd, stub, oflag, mode);
+    return r;
 }
 
 int stat(const char *path, struct stat *st)
@@ -228,11 +249,15 @@ int lstat(const char *path, struct stat *st)
 
 int fstatat(int fd, const char *path, struct stat *st, int flag)
 {
-    char buf[LCSYS_PATH_MAX];
+    char buf[LCSYS_PATH_MAX], stub[LCSYS_PATH_MAX];
+    int r;
     ENSURE();
     if (fd == AT_FDCWD || (path && path[0] == '/'))
         path = MAPPED(path, buf);
-    return lcsys_real.fstatat(fd, path, st, flag);
+    r = lcsys_real.fstatat(fd, path, st, flag);
+    if (r != 0 && errno == ENOENT && lc_stub_name(path, stub, sizeof stub))
+        r = lcsys_real.fstatat(fd, stub, st, flag);
+    return r;
 }
 
 int access(const char *path, int mode)
@@ -244,18 +269,80 @@ int access(const char *path, int mode)
 
 int faccessat(int fd, const char *path, int mode, int flag)
 {
-    char buf[LCSYS_PATH_MAX];
+    char buf[LCSYS_PATH_MAX], stub[LCSYS_PATH_MAX];
+    int r;
     ENSURE();
     if (fd == AT_FDCWD || (path && path[0] == '/'))
         path = MAPPED(path, buf);
-    return lcsys_real.faccessat(fd, path, mode, flag);
+    r = lcsys_real.faccessat(fd, path, mode, flag);
+    if (r != 0 && errno == ENOENT && lc_stub_name(path, stub, sizeof stub))
+        r = lcsys_real.faccessat(fd, stub, mode, flag);
+    return r;
 }
 
+/* opendir/closedir/readdir/readdir_r: stage.py leaves relinked Mach-Os as
+ * "<name>.lc" stubs, so a raw listing of jb/usr/bin shows "ls.lc" and a
+ * "*.so" module scan (gdk-pixbuf loaders, gio modules, gtk print backends)
+ * matches nothing. The suffix is stripped back out here for directories that
+ * live under <bundle>/jb; everything else is passed through untouched.
+ * arm64 has no "readdir$INODE64" variants - the 64-bit-inode struct dirent is
+ * the only one, so plain readdir/readdir_r are the right symbols. */
 DIR *opendir(const char *path)
 {
     char buf[LCSYS_PATH_MAX];
+    const char *host;
+    DIR *d;
     ENSURE();
-    return lcsys_real.opendir(MAPPED(path, buf));
+    host = MAPPED(path, buf);
+    d = lcsys_real.opendir(host);
+    if (d)
+        lcsys_dir_register(d, host); /* no-op unless host is under <bundle>/jb */
+    return d;
+}
+
+int closedir(DIR *d)
+{
+    ENSURE();
+    lcsys_dir_forget(d);
+    return lcsys_real.closedir(d);
+}
+
+struct dirent *readdir(DIR *d)
+{
+    struct lc_dir *ld;
+    struct dirent *e, *scratch;
+    ENSURE();
+    ld = lcsys_ready ? lcsys_dir_find(d) : NULL;
+    scratch = lcsys_dir_scratch(ld);
+    for (;;) {
+        e = lcsys_real.readdir(d);
+        if (!e || !scratch)
+            return e;
+        switch (lcsys_dir_filter(ld, e, scratch)) {
+        case 1:
+            return scratch; /* per-DIR buffer: same lifetime as libc's own */
+        case -1:
+            continue;       /* "<name>.lc" shadowed by a real "<name>" */
+        default:
+            return e;
+        }
+    }
+}
+
+int readdir_r(DIR *d, struct dirent *entry, struct dirent **result)
+{
+    struct lc_dir *ld;
+    int rc;
+    ENSURE();
+    ld = lcsys_ready ? lcsys_dir_find(d) : NULL;
+    for (;;) {
+        rc = lcsys_real.readdir_r(d, entry, result);
+        if (rc != 0 || !result || !*result || !ld)
+            return rc;
+        /* the entry lives in the caller's buffer: rewrite in place, no shared state */
+        if (lcsys_dir_filter(ld, *result, *result) >= 0)
+            return rc;
+    }
 }
 
 ssize_t readlink(const char *path, char *out, size_t bufsize)
@@ -423,6 +510,23 @@ void _exit(int status)
     lcsys_guest_exit(status);
     lcsys_real._exit(status);
     __builtin_unreachable();
+}
+
+/* Upstream bug in the Procursus libpcre2-8.0.dylib we bundle: it lists
+ * _SLJIT_UPDATE_WX_FLAGS as undefined (flat namespace) and nothing in the
+ * closure exports it, so dlopen(RTLD_NOW) of libpcre2 - and therefore of
+ * libglib/GTK, which depend on it - fails outright. It is sljit's W^X
+ * cache-flush hook. On this device mmap(MAP_JIT) is EPERM (G0), so pcre2's
+ * JIT compile fails and pcre2 falls back to its interpreter: the hook is never
+ * reached with real code to flush, and a no-op is the correct body.
+ * libLCsys is dlopen'd RTLD_GLOBAL by Runner.swift, so the flat-namespace
+ * lookup finds this definition. (C adds the leading underscore.) */
+__attribute__((visibility("default")))
+void SLJIT_UPDATE_WX_FLAGS(void *from, void *to, int exec)
+{
+    (void)from;
+    (void)to;
+    (void)exec;
 }
 
 void *dlopen(const char *path, int mode)
