@@ -565,6 +565,17 @@ final class Runner {
     /// 開いている窓の一覧。
     func startOverview() { startClient("/var/jb/usr/local/bin/ioscoverview", label: "ioscoverview") }
 
+    /// xiOS のセッションを立ち上げる。こちらが並べるのはここまでで、
+    /// 何を起動するか・どう見せるかは向こうのシェル(バーとドック)の仕事。
+    func startSession() {
+        guard setup() else { log.log("セッション: setup 失敗"); return }
+        log.log("=== セッション開始 ===")
+        guard ensureIoscReady() else { log.log("セッション: iosc を起こせなかった"); return }
+        startBar()
+        startDock()
+        log.log("=== セッション: \(status())  [footprint \(footprintMB()) MB] ===")
+    }
+
     /// 試験用の「全部入り」。iosc を起こし、繋がる相手を端から全部起こす。
     /// どれが出てどれが出ないかを 1 回で見るためのもので、普段使いの順番ではない。
     /// 端末(foot)は擬似端末が開けないので必ず失敗する。それも含めて見たいので入れてある。
@@ -628,8 +639,28 @@ final class Runner {
     // クライアント(ScreenView)が繋ぎに行く先。ioscArgv() の -ddx-sock と同じ文字列。
     func ddxPath() -> String { xiosDir + "/ddx" }
 
-    // 入力ソケット。ioscArgv() の -input-sock と同じ文字列
-    func inputPath() -> String { xiosDir + "/in" }
+    // ------------------------------------------------------------ 入力の受け渡し
+    //
+    // xiOS の設計では、アプリは iosc の入力ソケットに直結しない。間に ios-inputd が
+    // 居て、そこが「入力メソッド」としてコンポジタに登録され、文字を今選ばれている
+    // 窓に流し込む(`registered as input-method proxy` / `commit_string %zu bytes`)。
+    // 直結していたので `improxy=0 (local fallback)` になり、文字は届いても
+    // 渡す先が無かった(実機 2026-09-12)。
+
+    /// ios-inputd が待つソケット。iosc のものとは別にする(同じだと
+    /// 「something is already listening there」で起動を断られる)
+    var inputdSocketPath: String { xiosDir + "/i2" }
+
+    /// 入力の出し先。ios-inputd が居ればそちら、居なければ iosc に直結(従来どおり)
+    func inputPath() -> String {
+        aliveLabels().contains("ios-inputd") ? inputdSocketPath : xiosDir + "/in"
+    }
+
+    /// 入力メソッド。これがコンポジタに登録されて初めて、文字が窓に入る。
+    func startInputd() {
+        startClient("/var/jb/usr/local/bin/ios-inputd", label: "ios-inputd",
+                    args: ["-s", inputdSocketPath], settle: 1.0)
+    }
 
     // start() で起こした iosc がまだ生きているか
     func ioscAlive() -> Bool {
@@ -658,6 +689,8 @@ final class Runner {
         while waited <= 10_000 {
             if FileManager.default.fileExists(atPath: path) {
                 log.log("画面: ddx ソケットあり \(path)(待ち \(waited) ms)")
+                // 入力メソッドは土台の一部。画面に繋ぐ前に立てておく
+                if !aliveLabels().contains("ios-inputd") { startInputd() }
                 ensureClient()
                 return true
             }

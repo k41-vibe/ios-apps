@@ -83,6 +83,17 @@ struct ContentView: View {
                 Text("footprint \(footprintMB()) MB").font(.footnote)
             }
             HStack {
+                // 普段はこれだけ。土台(iosc + 入力メソッド + 壁紙)を立てて、
+                // あとは xiOS 自身のシェル(バーとドック)に任せて画面へ行く
+                Button("セッション開始") { startSession() }
+                    .buttonStyle(.borderedProminent).disabled(busy || opening)
+                if opening { ProgressView().controlSize(.small) }
+                Spacer()
+                Text("footprint \(footprintMB()) MB").font(.footnote)
+            }
+            DisclosureGroup("部品ごとに起こす(診断用)") {
+              VStack(spacing: 6) {
+                HStack {
                 // iosc は wl_display_run で戻ってこない。起動して 2 秒後の様子をログに出すだけ
                 Button("iosc を起動") { startIosc() }.buttonStyle(.bordered).disabled(busy)
                 // iosc が走っている間も押せるように busy では止めない(中身は一瞬で終わる)
@@ -106,11 +117,16 @@ struct ContentView: View {
                 Button("歯車") { run { $0.startGears() } }.buttonStyle(.bordered).disabled(busy)
                 Button("dbus") { run { $0.startDbus() } }.buttonStyle(.bordered).disabled(busy)
                 Button("エディタ") { run { $0.startEditor() } }.buttonStyle(.borderedProminent).disabled(busy)
+                Spacer()
+                }
+              }
+            }
+            .font(.footnote)
+            HStack {
                 Toggle("詳細ログ", isOn: Binding(
                     get: { Runner.traceEnabled },
                     set: { Runner.traceEnabled = $0; setenv("LCSYS_TRACE", $0 ? "1" : "0", 1) }
                 )).font(.footnote).fixedSize()
-                if opening { ProgressView().controlSize(.small) }
                 Spacer()
             }
             ScrollViewReader { proxy in
@@ -157,6 +173,19 @@ struct ContentView: View {
 
     private func startIosc() {
         run { $0.startIosc() }
+    }
+
+    // 普段の入口。土台を立てて画面へ行くだけで、何を起動するかは向こうのシェルの仕事
+    private func startSession() {
+        let r = ensureRunner()
+        busy = true
+        Thread {
+            r.startSession()
+            DispatchQueue.main.async {
+                busy = false
+                openScreen()
+            }
+        }.start()
     }
 
     // 試験用: 繋がる相手を全部起こしてから画面へ行く。1 回で全部見たいとき用。

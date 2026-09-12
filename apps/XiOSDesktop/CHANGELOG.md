@@ -8,6 +8,25 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-12
+
+### Added
+- **`ios-inputd` を土台に組み込んだ**。xiOS の設計では、アプリは iosc の入力ソケットに
+  直結しない。間に `ios-inputd` が居て、そこが入力メソッドとしてコンポジタに登録され、
+  文字を今選ばれている窓に流し込む(バイナリ内の
+  `registered as input-method proxy` / `commit_string %zu bytes (serial %u)` /
+  `%zu bytes of text with no focused field; dropped`)。実機で出ていた
+  `improxy=0 (local fallback)` の improxy はこれのこと。**真ん中を飛ばして直結していたのが
+  文字が出なかった理由**。iosc のソケットとは別の場所で待たせる(同じだと
+  `something is already listening there` で起動を断られる)
+- **「セッション開始」ボタン**。土台(iosc + 入力メソッド + 壁紙)を立てて、
+  バーとドックを起こして画面へ行く。それだけ
+
+### Changed
+- **ホスト側の役割を絞った**。何を起動するか・どう並べるかは xiOS 自身のシェルの仕事で、
+  こちらが SwiftUI のボタンで作るものではない。部品ごとのボタンは「診断用」の
+  折りたたみに移した。ホストが受け持つのは画面・指・土台の 3 つだけにする
+
 ## [0.1.0] - 2026-09-12
 
 ### Added
