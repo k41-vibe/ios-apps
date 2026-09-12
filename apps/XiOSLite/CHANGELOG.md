@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-12
+
 ### Added
 - **metal-event-broker(root の XPC サービス)の肩代わり** `native/xpcshim.m`。iosc は起動時に
   Metal のフェンスをこのサービスに登録できないと `FATAL: GPU compositor initialization failed` で
