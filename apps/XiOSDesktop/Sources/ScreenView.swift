@@ -313,7 +313,9 @@ final class ScreenClient: NSObject, MTKViewDelegate {
                 continue   // 触り始めを見ていない指は無視する
             }
             if let (x, y) = fbPoint(t.location(in: view), in: view) {
-                if phase != 0 { _ = xin.motion(conn, x, y) }   // 指の位置に合わせて印も動かす
+                // TOUCH だけを送る。本物のタッチ画面もそうで、ポインタ側は iosc が
+                // 自分で合成する(ioscdock に "suppress synthetic pointer after touch"
+                // という重複抑制がある)。こちらから MOTION も送ると二重になる
                 _ = xin.touch(conn, x, y, slot, phase)
                 touchesSent += 1
                 if touchesSent <= 3 || touchesSent % 200 == 0 {

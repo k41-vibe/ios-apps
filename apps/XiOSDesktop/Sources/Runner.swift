@@ -495,6 +495,13 @@ final class Runner {
     func startBar() { startClient("/var/jb/usr/local/bin/ioscbar", label: "ioscbar") }
     /// 端末。子プロセスを作れないので今は起動に失敗する見込み(G3 で解決)。
     func startFoot() { startClient(Self.footPath, label: "foot") }
+    /// xiOS 付属の最小クライアント。xdg_toplevel を 1 枚出してフレームを commit するだけで、
+    /// 子プロセスも dbus も要らない。「普通のアプリの窓」が出るかを確かめる相手。
+    func startTestClient() { startClient("/var/jb/usr/local/bin/iosc-client", label: "iosc-client") }
+    /// ドック(下の帯)。バーと同じ iosc-shell の別の顔。
+    func startDock() { startClient("/var/jb/usr/local/bin/ioscdock", label: "ioscdock") }
+    /// 開いている窓の一覧。
+    func startOverview() { startClient("/var/jb/usr/local/bin/ioscoverview", label: "ioscoverview") }
 
     func startIosc() {
         guard setup() else { log.log("iosc: setup 失敗"); return }

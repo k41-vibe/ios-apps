@@ -85,6 +85,11 @@ struct ContentView: View {
                 Button("背景") { run { $0.startBackground() } }.buttonStyle(.bordered).disabled(busy)
                 Button("バー") { run { $0.startBar() } }.buttonStyle(.bordered).disabled(busy)
                 Button("端末") { run { $0.startFoot() } }.buttonStyle(.bordered).disabled(busy)
+            }
+            HStack {
+                Button("窓") { run { $0.startTestClient() } }.buttonStyle(.bordered).disabled(busy)
+                Button("ドック") { run { $0.startDock() } }.buttonStyle(.bordered).disabled(busy)
+                Button("一覧") { run { $0.startOverview() } }.buttonStyle(.bordered).disabled(busy)
                 Toggle("詳細ログ", isOn: Binding(
                     get: { Runner.traceEnabled },
                     set: { Runner.traceEnabled = $0; setenv("LCSYS_TRACE", $0 ? "1" : "0", 1) }

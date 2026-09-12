@@ -8,6 +8,18 @@
 
 ## [Unreleased]
 
+## [0.0.7] - 2026-09-12
+
+### Added
+- **「窓」「ドック」「一覧」**のボタン。xiOS に付いている残りのクライアント。
+  `iosc-client` は xdg_toplevel を 1 枚出してフレームを commit するだけの最小の相手で、
+  子プロセスも dbus も要らない。**普通のアプリの窓が出るか**を確かめるためのもの
+
+### Changed
+- タッチは TOUCH だけを送るようにした(MOTION を併せて送るのをやめた)。本物のタッチ画面も
+  そうで、ポインタ側は iosc が自分で合成する(ioscdock に
+  `suppress synthetic pointer after touch` という重複抑制がある)。こちらからも送ると二重になる
+
 ## [0.0.6] - 2026-09-12
 
 ### Added
