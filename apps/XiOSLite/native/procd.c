@@ -484,6 +484,40 @@ int lcsys_spawn(const char *path, char *const argv[], char *const envp[], int fd
     return p->pid;
 }
 
+/* Non-destructive status probe, for guests that are never waited for (iosc ends in
+ * wl_display_run and only comes back when it dies). Unlike lcsys_wait this leaves the
+ * proc on the list, so the same pid can be polled again and again.
+ *
+ *    1  running  (a struct lc_proc with that pid exists and done == 0)
+ *    0  finished (main() returned or exit() was called; *status = the exit code)
+ *   -1  unknown  (never spawned, or already reaped by lcsys_wait); errno = ECHILD
+ *
+ * `status` may be NULL, and is set to -1 unless the return value is 0. done/status are
+ * written by the guest thread without taking procs_lock (same as lcsys_wait reads them);
+ * they are a plain int flag written once at the end of the thread, so a stale read only
+ * ever costs one more poll. */
+int lcsys_alive(int pid, int *status)
+{
+    struct lc_proc *p;
+    int alive = -1, st = -1;
+
+    pthread_mutex_lock(&procs_lock);
+    for (p = procs; p; p = p->next) {
+        if (p->pid == pid) {
+            alive = p->done ? 0 : 1;
+            if (p->done)
+                st = p->status;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&procs_lock);
+    if (status)
+        *status = st;
+    if (alive < 0)
+        errno = ECHILD;
+    return alive;
+}
+
 int lcsys_wait(int pid, int *status)
 {
     struct lc_proc *p, **pp;

@@ -19,6 +19,8 @@ GUI(iosc/foot/GTK)は G2 以降。
    6. `/var/jb/usr/bin/pkg-config --list-all`(libpcre2 が読めるか)
 4. テキスト欄に任意のコマンド行を打って Run できる(空白区切り、`"..."` `'...'` のみ対応。
    先頭語にスラッシュが無ければ `/var/jb/usr/bin:/var/jb/usr/local/bin:/var/jb/bin` を探す)
+5. 「iosc を起動」= 戻ってこないゲスト(Wayland コンポジタ)を wait せずに起こす(下記)。
+   「状態」= 起こしたゲストの生死と footprint と作業ディレクトリの中身
 
 ログは画面の他に `Documents/xioslite.log` に fsync 付きで残る(Copy / Share log ボタン)。
 各コマンドの前後に `footprint`(phys_footprint、MB)と所要 ms を出す。
@@ -122,6 +124,9 @@ pthread で `entry(argc, argv, envp, apple)` を呼ぶ。
    libc 側に当たった場合も、この後に走るゲストスレッドが `optind=1; optreset=1;` に
    戻すので害は無い
 戻り値は擬似 pid(1000 から)。`lcsys_wait(pid, &status)` は join。`dlclose` はしない。
+`lcsys_alive(pid, &status)` は **join も回収もしない**生死の確認(`1` 実行中 / `0` 終了済み
+(`status` に終了コード)/ `-1` 知らない pid = ECHILD)。リストから外すのは `lcsys_wait` だけなので
+同じ pid を何度でも聞ける。戻ってこないゲスト(iosc)用。
 `argv[0]` はゲストの元パス(`/var/jb/usr/bin/ls`)のまま渡す(coreutils の multi-call と bash が見る)。
 
 relink.py は元が実行ファイルだった Mach-O に `LC_ID_DYLIB @rpath/<flat>` を追記する
@@ -139,8 +144,8 @@ relink.py は元が実行ファイルだった Mach-O に `LC_ID_DYLIB @rpath/<f
 | atexit | ゲストの登録は溜まるだけで走らない |
 | fork/exec | 無い(ログのみ) |
 
-環境変数: `HOME TMPDIR PATH XDG_RUNTIME_DIR XDG_DATA_DIRS PKG_CONFIG_PATH TERM=dumb LANG=C.UTF-8
-LC_ALL=C SHELL USER=mobile`。
+環境変数: `HOME TMPDIR PATH XDG_RUNTIME_DIR WAYLAND_DISPLAY=wayland-0 IOSC_DEBUG=1 XDG_DATA_DIRS
+PKG_CONFIG_PATH TERM=dumb LANG=C.UTF-8 LC_ALL=C SHELL USER=mobile`。
 
 ## G1 関門の読み方(コンソールで確認すること)
 
@@ -160,6 +165,43 @@ LC_ALL=C SHELL USER=mobile`。
 8. test 6: `pkg-config --list-all` が .pc を列挙して `exit=0`
    (`symbol not found in flat namespace '_SLJIT_UPDATE_WX_FLAGS'` が出たら libpcre2 対処が効いていない)
 9. 各行の footprint が単調に増えすぎていないこと
+
+## iosc を起こす(G2 の最初の一歩)
+
+`iosc` は `wl_display_run()` で止まるので **戻ってこない**。そのため `Runner.start(argv, label:)` を
+使う: spawn したら pid を返すだけで join せず、`[pid: ラベル]` の表に控える。`Runner.lock`
+(コマンドを 1 本ずつに直列化している錠)は **spawn の一瞬しか握らない**。握ったままにすると
+iosc が生きている間ほかのコマンドが一切動かなくなる。
+
+`Runner.startIosc()`(「iosc を起動」ボタン)がやること。2 秒眠るので必ず別スレッドから呼ぶ。
+
+1. `<TMPDIR>/xdg-runtime` と `<TMPDIR>/xios` を作る(無ければ)
+2. `XDG_RUNTIME_DIR=<TMPDIR>/xdg-runtime`、`WAYLAND_DISPLAY=wayland-0`、`IOSC_DEBUG=1` を
+   `environment()` 経由で設定してログに出す(G1 では環境変数はプロセス全体で 1 つ)
+3. `/var/jb/usr/local/bin/iosc` を起こす。フラグは全部 upstream の `wayland/iosc_options.c` 由来で、
+   ソケットの既定値(`/var/jb/tmp/...` = 読み取り専用の bundle 配下)を避けるため明示する:
+
+   ```
+   -g 1170x2532 -logical 585x1266 -scale 2 -s wayland-0
+   -ddx-sock <TMPDIR>/xios/iosc-ddx.sock   -json <TMPDIR>/xios/xios.json
+   -input-sock <TMPDIR>/xios/iosc-input.sock
+   -clipboard-sock <TMPDIR>/xios/iosc-clipboard.sock
+   -wm-sock <TMPDIR>/xios/iosc-wm.sock
+   ```
+
+4. 2 秒後に pid がまだ生きているか(`lcsys_alive`)と、2 つのディレクトリに何ができたか
+   (名前 + サイズ、ソケットは `(socket)`)を出す
+
+**ソケットのパスはホスト側の実パスで渡す**。`bind`/`connect` は横取りしていないので本物の
+パスがそのまま要る(逆に `unlink`/`stat` は横取りされ `/var/mobile` → HOME に化けるが、
+ソケットの後始末に失敗するだけなので無害)。ただし AF_UNIX の `sun_path` は 104 バイトで、
+実機の `$TMPDIR` は 89 文字(G0)。`<TMPDIR>/xios/iosc-ddx.sock` は 108 バイトで **上限を超える**ので、
+起動前に各パスの長さをログに出す(`*** sun_path の上限 104 B 超え ***`)。超えていたら
+ディレクトリ名を詰める(`xios` → `x` など)必要がある。
+
+この段階では絵も入力もまだ無い。**iosc はどこかで失敗するのが期待される結果**で、
+見たいのは「どこまで進んだか」。ログは 1 行ごとに fsync しているので、iosc のスレッドが
+落ちても最後の行まで残る。
 
 ## ビルド
 

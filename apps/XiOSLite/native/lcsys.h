@@ -41,6 +41,10 @@ extern "C" {
  * log_fd: where lcsys_log() writes (the console pipe). Returns 0. */
 int lcsys_spawn(const char *path, char *const argv[], char *const envp[], int fd_out, int fd_err);
 int lcsys_wait(int pid, int *status);
+/* Poll a pid without reaping it (for guests that never return, e.g. iosc):
+ * 1 = running, 0 = finished (*status = exit code), -1 = unknown pid (ECHILD).
+ * `status` may be NULL. lcsys_wait stays the only thing that frees a proc. */
+int lcsys_alive(int pid, int *status);
 int lcsys_init(const char *bundle_path, const char *home, const char *tmp, int log_fd);
 void lcsys_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
