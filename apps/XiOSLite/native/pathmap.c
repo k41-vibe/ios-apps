@@ -120,6 +120,41 @@ static void join2(char *out, size_t cap, const char *base, const char *rest)
         lc_strlcat(out, rest, cap); /* rest starts with '/' */
 }
 
+/* "/private/var/..." and "/var/..." name the same file on Darwin. */
+static const char *strip_private(const char *p)
+{
+    return strncmp(p, "/private/", 9) == 0 ? p + 8 : p;
+}
+
+/* Already a HOST path (inside our own container)? Those must pass through untouched.
+ *
+ * iosc is handed XDG_RUNTIME_DIR and its socket paths as real host paths, and libwayland
+ * then open()s "<XDG_RUNTIME_DIR>/wayland-0.lock" through our override. The
+ * "/var/mobile -> HOME" rule below rewrote that into a path that does not exist, so
+ * wl_display_add_socket(wayland-0) failed on device (2026-09-12) - while bind(), which we
+ * do not override, had already succeeded on the ddx socket in the very next directory.
+ */
+static int is_host_path(const char *p)
+{
+    const char *cands[3];
+    const char *r;
+    size_t n;
+    int i;
+
+    cands[0] = lcsys_cfg.tmp;
+    cands[1] = lcsys_cfg.home;
+    cands[2] = lcsys_cfg.bundle;
+    for (i = 0; i < 3; i++) {
+        if (!cands[i] || !cands[i][0])
+            continue;
+        r = strip_private(cands[i]);
+        n = strlen(r);
+        if (n > 1 && strncmp(p, r, n) == 0 && (p[n] == '/' || p[n] == '\0'))
+            return 1;
+    }
+    return 0;
+}
+
 char *lcsys_map_path(const char *in, char *out, size_t cap)
 {
     const char *p, *rest;
@@ -131,11 +166,11 @@ char *lcsys_map_path(const char *in, char *out, size_t cap)
         lc_strlcpy(out, in, cap);
         return out;
     }
-    p = in;
-    if (strncmp(p, "/private/", 9) == 0)
-        p += 8; /* "/private/var/jb" -> "/var/jb", "/private/tmp" -> "/tmp" */
+    p = strip_private(in); /* "/private/var/jb" -> "/var/jb", "/private/tmp" -> "/tmp" */
 
-    if (prefix_match(p, "/var/jb", &rest))
+    if (is_host_path(p))
+        lc_strlcpy(out, in, cap);
+    else if (prefix_match(p, "/var/jb", &rest))
         join2(out, cap, lcsys_cfg.jb, rest);
     else if (prefix_match(p, "/var/mobile", &rest) || prefix_match(p, "/var/root", &rest))
         join2(out, cap, lcsys_cfg.home, rest);
