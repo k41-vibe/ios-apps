@@ -1,12 +1,21 @@
 import Foundation
 import Darwin
 
-// コンソール。画面用の文字列と、落ちても残るよう Documents/xioslite.log に fsync 付きで書く(LCProbe と同じ作り)。
+// コンソール。画面用の文字列と、落ちても残るようファイルへ書く。
+//
+// 【重要】1 行ごとに fsync + @Published への追記をしていたら、経路変換の追跡を有効にした
+// 実機でアプリが這った(毎秒数千行 × ディスク同期 × 全文再描画)。書き込みはまとめて行い、
+// 画面用の文字列は上限で切り、fsync は節目だけにする。
 final class ConsoleLog: ObservableObject {
     @Published var text = ""
     let fileURL: URL
     private var fh: FileHandle?
     private let lock = NSLock()
+    private var pending = ""          // まだファイルにも画面にも出していない分
+    private var flushScheduled = false
+    private var sinceSync = 0
+    private static let maxOnScreen = 120_000   // 画面に保持する文字数の上限
+    private static let syncEvery = 256 * 1024  // これだけ書いたら 1 回 fsync
 
     init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -29,20 +38,57 @@ final class ConsoleLog: ObservableObject {
     }
 
     private func append(_ s: String) {
-        DispatchQueue.main.async { self.text += s }
-        if let d = s.data(using: .utf8) {
-            lock.lock()
-            fh?.write(d)
-            try? fh?.synchronize()
-            lock.unlock()
+        lock.lock()
+        pending += s
+        let needSchedule = !flushScheduled
+        if needSchedule { flushScheduled = true }
+        lock.unlock()
+        if needSchedule {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.flush() }
         }
     }
 
-    func previous() -> String { (try? String(contentsOf: fileURL, encoding: .utf8)) ?? "" }
+    /// たまった分をファイルへ書き、画面用の文字列を更新する(主スレッド)。
+    func flush() {
+        lock.lock()
+        let chunk = pending
+        pending = ""
+        flushScheduled = false
+        if let d = chunk.data(using: .utf8), !d.isEmpty {
+            fh?.write(d)
+            sinceSync += d.count
+            if sinceSync >= Self.syncEvery {
+                try? fh?.synchronize()
+                sinceSync = 0
+            }
+        }
+        lock.unlock()
+        guard !chunk.isEmpty else { return }
+        var t = text + chunk
+        if t.count > Self.maxOnScreen {
+            t = "…(古い行は省略。全文は共有かファイルで)\n" + String(t.suffix(Self.maxOnScreen))
+        }
+        text = t
+    }
+
+    /// 共有やコピーの直前に呼ぶ。取りこぼしを無くす。
+    func sync() {
+        flush()
+        lock.lock(); try? fh?.synchronize(); sinceSync = 0; lock.unlock()
+    }
+
+    func previous() -> String {
+        sync()
+        return (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
+    }
 
     func clearFile() {
+        lock.lock()
+        pending = ""
         try? fh?.truncate(atOffset: 0)
-        DispatchQueue.main.async { self.text = "" }
+        sinceSync = 0
+        lock.unlock()
+        text = ""
     }
 
     static func stamp() -> String {
@@ -87,6 +133,9 @@ final class Runner {
 
     static let pathDirs = "/var/jb/usr/bin:/var/jb/usr/local/bin:/var/jb/bin"
     static let ioscPath = "/var/jb/usr/local/bin/iosc"
+    static let footPath = "/var/jb/usr/bin/foot"
+    /// 経路変換の追跡。iosc を起こす前に立てること(環境変数はプロセス全体で 1 つ)
+    static var traceEnabled = false
 
     let home: String
     let tmp: String
@@ -115,8 +164,8 @@ final class Runner {
             "XDG_RUNTIME_DIR": runtimeDir,
             "WAYLAND_DISPLAY": "wayland-0",   // iosc の -s と同じ名前(クライアントが見る側)
             "IOSC_DEBUG": "1",
-            // 1 にすると経路変換を 1 件ずつログに出す(xkb がどのパスを要求したかを見るため)
-            "LCSYS_TRACE": "1",
+            // 経路変換の 1 件ずつの記録。毎秒数千行出るので既定は切る(「詳細ログ」で入れる)
+            "LCSYS_TRACE": Runner.traceEnabled ? "1" : "0",
             "IOSC_IGNORE_ACTIVE_SESSION": "1",   // /var/jb/tmp/xios-active-session は読めない
             "XIOS_RUNTIME_TMP": runtimeDir,      // クライアント側のログ置き場 (XSurface.c)
             "XDG_DATA_DIRS": "/var/jb/usr/share",

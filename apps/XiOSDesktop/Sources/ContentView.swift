@@ -71,6 +71,16 @@ struct ContentView: View {
                 Button("状態") { showStatus() }.buttonStyle(.bordered)
                 // ddx に繋いで iosc の出力を出す。必要なら iosc も起こす
                 Button("画面") { openScreen() }.buttonStyle(.bordered).disabled(opening)
+            }
+            HStack {
+                // コンポジタは繋いでくる相手が居ないと描くものが無い。まず 1 本起こす
+                Button("背景") { run { $0.startBackground() } }.buttonStyle(.bordered).disabled(busy)
+                Button("バー") { run { $0.startBar() } }.buttonStyle(.bordered).disabled(busy)
+                Button("端末") { run { $0.startFoot() } }.buttonStyle(.bordered).disabled(busy)
+                Toggle("詳細ログ", isOn: Binding(
+                    get: { Runner.traceEnabled },
+                    set: { Runner.traceEnabled = $0; setenv("LCSYS_TRACE", $0 ? "1" : "0", 1) }
+                )).font(.footnote).fixedSize()
                 if opening { ProgressView().controlSize(.small) }
                 Spacer()
             }
