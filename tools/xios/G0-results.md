@@ -41,6 +41,24 @@ mprotect RW->RX   : 成功(失敗ログが出ていない)
 - `$TMPDIR` のパス長 89 文字。Documents 配下は 163 文字で **Unix ソケットのパス上限 103 を超える**
 - `os_proc_available_memory` が jetsam 上限とほぼ一致(残量の監視に使える)
 
+## 追記(9/12): 同梱バイナリ 408 本のシンボル事前検査
+
+`audit_symbols.py` で、未定義シンボルが実機で解決できるかを二段名前空間の library ordinal から厳密に検査した。
+JIT-less では `dlopen(RTLD_NOW)` で束縛するため、解決できないシンボルが 1 つあれば読み込み時に失敗する。
+
+結果: **実害のある不良は 1 件のみ**。
+
+1. **`libpcre2-8.0.dylib` が `_SLJIT_UPDATE_WX_FLAGS` を要求するが、どこにも存在しない**(上流パッケージの
+   ビルド不良)。sljit(pcre2 の JIT バックエンド)の W^X フック。**`libglib-2.0.0.dylib` がこのライブラリに
+   依存しているため、放置すると GTK4 / nautilus / iosc-shell が全滅する**(iosc 本体は非依存)。
+   対処: `libLCsys.dylib` に no-op として定義する。実機では `mmap(MAP_JIT)` が EPERM なので
+   pcre2 の JIT コンパイルは失敗し、インタプリタに落ちる。実害なし。
+2. bash のロード可能ビルトイン 26 個(`/var/jb/usr/lib/bash/` の `rm`, `mkdir`, `seq` 等)が
+   `_reset_internal_getopt` 等 bash 本体のシンボルをフラット検索で要求している。
+   `enable -f` で明示的に読まない限り誰も触らないので**放置でよい**(本物の `/usr/bin/rm` とは別物)。
+
+これ以外の 380 本は完全にリンク解決可能。G2 に進んでよい。
+
 ## G2 以降への反映
 
 1. メモリ予算は 4 GB。KDE Plasma Mobile(インストール 610 MB)も射程に入る。
