@@ -897,6 +897,29 @@ int xs_presented(xs_conn *c, uint64_t seq, uint32_t us_since_present, int measur
     return rc;
 }
 
+/* 表示の時計をコンポジタに渡す(XSurface.c:659 xsurface_pacing と同じ並び)。
+ * a = 次の表示期限までの µs、b = 周期 µs、c/d = 最小/最大 fps×1000。
+ * iosc はこれで pacing=event-loop から vblank に切り替わる。 */
+int xs_pacing(xs_conn *c, int32_t until_deadline_us, uint32_t interval_us, int32_t min_mfps, int32_t max_mfps)
+{
+    xios_msg m;
+    int rc;
+
+    if (!c || interval_us == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    xs_msg_init(&m, XIOS_MSG_PACING, 0);
+    m.a = until_deadline_us;
+    m.b = interval_us > (uint32_t)INT32_MAX ? INT32_MAX : (int32_t)interval_us;
+    m.c = min_mfps;
+    m.d = max_mfps;
+    pthread_mutex_lock(&c->lock);
+    rc = c->broken ? -1 : xs_write_full(c->fd, &m, sizeof m);
+    pthread_mutex_unlock(&c->lock);
+    return rc;
+}
+
 const unsigned char *xs_release_token(xs_conn *c)
 {
     return (c && c->has_release_token) ? c->release_token : NULL;

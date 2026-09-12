@@ -112,6 +112,10 @@ func footprintMB() -> Int {
 }
 
 // libLCsys.dylib を dlopen し、procd 経由でゲストを「スレッドとして」走らせる。
+//
+// ホストが受け持つのは 3 つだけ: 画面(ScreenView)、指と文字(xinput)、土台(procd と環境)。
+// 何を起動してどう並べるかは xiOS 自身のシェル(バーとドック)の仕事で、ここは
+// run-shell.sh(iosc → ioscbg → ioscbar → ioscdock)と同じ順に起こすところまで。
 final class Runner {
     typealias InitFn = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int32) -> Int32
     typealias SpawnFn = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<UnsafeMutablePointer<CChar>?>?,
@@ -132,32 +136,22 @@ final class Runner {
     private var started: [Int32: String] = [:]
     private let startedLock = NSLock()
 
-    static let pathDirs = "/var/jb/usr/bin:/var/jb/usr/local/bin:/var/jb/bin"
+    static let pathDirs = "/var/jb/usr/local/bin:/var/jb/usr/bin:/var/jb/bin"
     static let ioscPath = "/var/jb/usr/local/bin/iosc"
     static let footPath = "/var/jb/usr/bin/foot"
 
     // ------------------------------------------------------------ 画面の大きさ
-    // 上端は Dynamic Island と iOS のステータスバーが占めているので、そこを避けた
-    // 範囲をコンポジタの「画面」として渡す。避けずに全面を渡すと、一番上に置かれる
-    // ioscbar が島の下に潜って読めなくなる(実機 2026-09-12)。
-    // ContentView が起動時に実機の値を入れる。入らなかったときは 14 Pro の実寸。
-    static var logicalPoints = CGSize(width: 393, height: 852 - 59 - 34)
+    //
+    // xiOS のシェルは幅 1440 を基準に描き、その縮尺 ui = 論理幅/1440 を 0.6〜2.5 に
+    // 収める(iosc-shell.c pl_ui)。iPhone の 393 幅をそのまま渡すと 0.27 → 0.6 に
+    // 切り上げられ、「幅 864 のつもり」で描いた帯の右が切れる(実機 2026-09-12)。
+    // xiOS 自身も iPad で 1440 論理を 2160 のパネルに縮小して映しているので
+    // (xios-app.md "Render Scale")、同じ手で行く: 論理幅を 864 に固定し、高さは
+    // 画面の縦横比から決め、ScreenView が aspect-fit で縮小する。タッチの逆変換は
+    // ScreenView.fbPoint がビューポート基準なので、そのままで合う。
+    static let logicalWidth = 864
+    static var logicalPoints = CGSize(width: 864, height: 1668)   // 14 Pro の縦横比の既定
     static var topInsetPoints: CGFloat = 59
-
-    /// 実際に使えるロケールを 1 回だけ探す。Darwin の libc に glibc の "C.UTF-8" は無く、
-    /// "en_US.UTF-8" もこのサンドボックスからは引けなかった(実機 2026-09-12:
-    /// `setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory`)。
-    /// ホストとゲストは同じ libSystem を使うので、ここで通った名前はゲストでも通る。
-    static let locale: String = {
-        let saved = setlocale(LC_ALL, nil).map { String(cString: $0) }
-        var chosen = "C"
-        for cand in ["en_US.UTF-8", "UTF-8", "C.UTF-8"] where setlocale(LC_ALL, cand) != nil {
-            chosen = cand
-            break
-        }
-        if let s = saved { setlocale(LC_ALL, s) }
-        return chosen
-    }()
 
     /// UIKit から安全領域を読んで logicalPoints を決める。**メインスレッドから呼ぶこと**。
     static func measureScreen() -> String {
@@ -168,11 +162,13 @@ final class Runner {
         }
         let b = win.bounds, ins = win.safeAreaInsets
         topInsetPoints = ins.top
-        // 下端はホームインジケータ(横棒)が乗る。ここに描くと指で触れないし、
-        // ドックを置いても棒と重なって読めない(実機 2026-09-12)
-        logicalPoints = CGSize(width: b.width, height: b.height - ins.top - ins.bottom)
+        // 上は Dynamic Island、下はホームインジケータ。どちらも iOS に譲った残りが画面
+        let usableW = b.width, usableH = b.height - ins.top - ins.bottom
+        let h = (CGFloat(logicalWidth) * usableH / max(usableW, 1)).rounded()
+        logicalPoints = CGSize(width: CGFloat(logicalWidth), height: h)
         return "画面 \(Int(b.width))x\(Int(b.height)) pt、安全領域 上 \(Int(ins.top)) / 下 \(Int(ins.bottom)) pt "
-            + "-> コンポジタには \(Int(logicalPoints.width))x\(Int(logicalPoints.height)) pt を渡す"
+            + "-> 使える範囲 \(Int(usableW))x\(Int(usableH)) pt、コンポジタの論理画面は \(logicalWidth)x\(Int(h))"
+            + "(縮小率 \(String(format: "%.2f", usableW / CGFloat(logicalWidth))))"
     }
 
     static func logicalArg() -> String {
@@ -201,83 +197,113 @@ final class Runner {
         xiosDir = t + "/x"
     }
 
-    // ゲストが getenv で見るのはプロセス環境なので setenv も行う(G1 ではプロセス全体で 1 つ)
+    // ------------------------------------------------------------ 環境
+    //
+    // ゲストが getenv で見るのはプロセス環境なので setenv も行う(プロセス全体で 1 つ)。
+    // 値は xiOS 側の起動スクリプトに合わせる: run-shell.sh(iosc-shell)、
+    // shell-draw.h sd_launch(ドックからの起動)、xios-session-lib.sh の `app` 節。
     func environment() -> [String: String] {
         [
             "HOME": home,
             "TMPDIR": tmp,
             "PATH": Self.pathDirs,
             "XDG_RUNTIME_DIR": runtimeDir,
-            "WAYLAND_DISPLAY": "wayland-0",   // iosc の -s と同じ名前(クライアントが見る側)
+            // 絶対パス。xios-session-lib.sh:1236 と同じ作法で、シェルが起動するアプリの
+            // XDG_RUNTIME_DIR を共有バスの置き場へ差し替えても(sd_launch)、
+            // クライアントはコンポジタを見失わない。iosc 自身は -s wayland-0 で作る
+            "WAYLAND_DISPLAY": runtimeDir + "/wayland-0",
             "IOSC_DEBUG": "1",
+            "IOSC_SHELL_DEBUG": "1",             // run-shell.sh の既定。タッチの当たり判定を記録する
+            "IOSC_PANEL_SCALE": "2",             // iosc の -scale と同じ(帯の描画倍率)
             // 経路変換の 1 件ずつの記録。毎秒数千行出るので既定は切る(「詳細ログ」で入れる)
             "LCSYS_TRACE": Runner.traceEnabled ? "1" : "0",
             // fork をスタック複製で再現する。"fail" にすると従来どおり -1 を返す
             "LCSYS_FORK": Runner.forkCloneEnabled ? "clone" : "fail",
             "IOSC_IGNORE_ACTIVE_SESSION": "1",   // /var/jb/tmp/xios-active-session は読めない
             "XIOS_RUNTIME_TMP": runtimeDir,      // クライアント側のログ置き場 (XSurface.c)
-            "XDG_DATA_DIRS": "/var/jb/usr/share",
-            "PKG_CONFIG_PATH": "/var/jb/usr/lib/pkgconfig:/var/jb/usr/share/pkgconfig:/var/jb/usr/local/lib/pkgconfig",
-            "TERM": "dumb",
-            // Darwin の libc に glibc の "C.UTF-8" は無い(setlocale が失敗して "C" に落ち、
-            // foot が「'C' is not a UTF-8 locale」と言う)。Darwin にある綴りを使う
-            // LC_ALL は LANG より優先される。3 つとも「実際に引ける名前」で揃える
-            "LANG": Runner.locale,
-            "LC_CTYPE": Runner.locale,
-            "LC_ALL": Runner.locale,
-            // ioscbg のデスクトップ部品(Storage / Memory / Load / Session)の置き場。
-            // 設定ファイルが無いと 1 つも描かれない(実機 2026-09-12「ストレージが出ない」)
+            "XDG_DATA_DIRS": "/var/jb/usr/share:/var/jb/usr/local/share",
+            // iOS に在る UTF-8 ロケールはこの綴りだけ(foot の iOS パッチ 0001、wayland-apps.md、
+            // sd_launch の setenv("LC_CTYPE","UTF-8") の 3 箇所が一致)。LANG / LC_ALL は
+            // 設定しない: en_US.UTF-8 も C.UTF-8 も引けず、LC_ALL は LC_CTYPE を上書きする
+            "LC_CTYPE": "UTF-8",
+            // GTK/GLib のアプリ向け(sd_launch:415-422 と同じ)。壁紙やバーには無害
+            "GDK_BACKEND": "wayland",
+            "GSK_RENDERER": "ngl",
+            "ANGLE_REAL_LIBEGL": "/var/jb/lib/angle/libEGL.angle.dylib",
+            "GSETTINGS_BACKEND": "memory",
+            "GTK_A11Y": "none",
+            // 初回起動で生成する「パッケージの後処理」の置き場(firstLaunchSetup)
+            "GSETTINGS_SCHEMA_DIR": schemaDir,
+            "GDK_PIXBUF_MODULE_FILE": loadersCachePath,
+            "XDG_CACHE_HOME": cacheDir,
+            // ioscbg のデスクトップ部品(Storage / Memory / Load / Session)の置き場
             "IOSC_WIDGET_CONFIG": widgetConfigPath,
-            // dbus の場所はここでは決めない。xiOS のシェルは自分で
-            // <jbroot>/tmp/iosc-shell-bus に 1 本立て、起動するアプリにその場所を
-            // 教える(shell-draw.h の sd_launch)。こちらが先に別の場所を指すと、
-            // 二重に立てる道へ迷い込む
             "SHELL": "/var/jb/usr/bin/bash",
             "USER": "mobile",
         ]
     }
 
-    // ------------------------------------------------------------ デスクトップ部品
+    // ------------------------------------------------------------ 初回起動の後処理
+    //
+    // deb の postinst は一度も走っていない(ipa は読み取り専用で、そこには書けない)。
+    // 必要なものを書ける場所に生成して環境変数で指す。
+    //   libgtk-4-1 の postinst: glib-compile-schemas → GSETTINGS_SCHEMA_DIR
+    //   libgdk-pixbuf の loaders.cache          → GDK_PIXBUF_MODULE_FILE
+    //   fontconfig の fc-cache                   → XDG_CACHE_HOME
+    // これが無いと GTK4 のアプリは g_settings_new で abort し(wayland-apps.md の hitori の項)、
+    // SVG のアイコンは描けない(ドックが頭文字になっていた一因)。
 
+    var schemaDir: String { home + "/glib-schemas" }
+    var loadersCachePath: String { home + "/loaders.cache" }
+    var cacheDir: String { home + "/cache" }
     var widgetConfigPath: String { home + "/iosc-widgets.conf" }
 
-    /// xiOS のシェルは起動するアプリの `XDG_RUNTIME_DIR` を、共有バスの置き場
-    /// (`<jbroot>/tmp/iosc-shell-bus`)に差し替える(`shell-draw.h` の `sd_launch`)。
-    /// Wayland のクライアントは `XDG_RUNTIME_DIR/WAYLAND_DISPLAY` を見るので、
-    /// そのままだとコンポジタが見つからなくなる。置き場を先に作って、そこからも
-    /// 同じソケットが見えるように印(シンボリックリンク)を張っておく。
-    func prepareShellBusDir() {
-        let dir = tmp + "/iosc-shell-bus"
-        let link = dir + "/wayland-0"
-        let target = runtimeDir + "/wayland-0"
+    private func firstLaunchSetup() {
         let fm = FileManager.default
-        // 前回の使い残しが在ると「バスはもう在る」と誤って判断される
-        for n in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] {
-            try? fm.removeItem(atPath: dir + "/" + n)
+        try? fm.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
+
+        // gdk-pixbuf: 積んでいるローダーは SVG の 1 本だけ(PNG/JPEG は本体に内蔵)。
+        // 形式は gdk-pixbuf-query-loaders の出力そのもので、モジュールの場所はゲストの
+        // パスで書く(g_module_open → dlopen → 経路変換 → Frameworks/ の実体)
+        if !fm.fileExists(atPath: loadersCachePath) {
+            let text = """
+            # GdkPixbuf Image Loader Modules file
+            # generated by XiOSDesktop at first launch
+            #
+            "/var/jb/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-svg.so"
+            "svg" 6 "gdk-pixbuf" "Scalable Vector Graphics" "LGPL"
+            "image/svg+xml" "image/svg" "image/svg-xml" "image/vnd.adobe.svg+xml" "text/xml-svg" "image/svg+xml-compressed" ""
+            "svg" "svgz" "svg.gz" ""
+            " <svg" "*    " 100
+            " <!DOCTYPE svg" "*             " 100
+            ""
+
+            """
+            do { try text.write(toFile: loadersCachePath, atomically: true, encoding: .utf8) }
+            catch { log.log("loaders.cache が書けない: \(error.localizedDescription)") }
         }
-        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        if !fm.fileExists(atPath: link) {
-            do { try fm.createSymbolicLink(atPath: link, withDestinationPath: target) }
-            catch { log.log("バス置き場の印が張れない: \(error.localizedDescription)") }
+
+        // ioscbg の部品の配置。書式は `名前 x y 有効`(ioscbg.c:224 fscanf "%31s %d %d %d")。
+        // ioscbg は部品を動かすたびに同じファイルへ書き戻すので、初回だけ書く
+        if !fm.fileExists(atPath: widgetConfigPath) {
+            let text = "storage 24 140 1\nmemory 24 260 1\nload 24 380 1\nuptime 24 500 1\n"
+            do { try text.write(toFile: widgetConfigPath, atomically: true, encoding: .utf8) }
+            catch { log.log("デスクトップ部品の設定が書けない: \(error.localizedDescription)") }
         }
     }
 
-    /// ioscbg が読む部品の配置。書式は逆アセンブルで確かめた `名前 x y 有効` の 4 つ組
-    /// (`fscanf(f, "%31s %d %d %d")` が 4 を返したときだけ採用し、3 番目は 0 以外なら表示)。
-    /// 名前は storage / memory / load / uptime の 4 つで、表示名は Storage / Memory / Load / Session。
-    /// 既定の置き場 /var/mobile/Library/Preferences/com.max.iosc-widgets.conf は
-    /// このサンドボックスには無いので、環境変数で自前の場所を指す。
-    func writeWidgetConfig() {
-        let text = """
-        storage 24 140 1
-        memory 24 260 1
-        load 24 380 1
-        uptime 24 500 1
-        """
-        do {
-            try text.write(toFile: widgetConfigPath, atomically: true, encoding: .utf8)
-        } catch {
-            log.log("デスクトップ部品の設定が書けない: \(error.localizedDescription)")
+    /// ゲストを走らせる後処理(setup の後、iosc の前)。
+    private func firstLaunchGuestSetup() {
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: schemaDir + "/gschemas.compiled") {
+            try? fm.createDirectory(atPath: schemaDir, withIntermediateDirectories: true)
+            log.log("初回: GSettings のスキーマを compile(libgtk-4-1 の postinst 相当)")
+            _ = run(["/var/jb/usr/bin/glib-compile-schemas", "--targetdir=" + schemaDir,
+                     "/var/jb/usr/share/glib-2.0/schemas"])
+        }
+        if !fm.fileExists(atPath: cacheDir + "/fontconfig") {
+            log.log("初回: フォントのキャッシュを作る(fontconfig の postinst 相当)")
+            _ = run(["/var/jb/usr/bin/fc-cache", "-f"])
         }
     }
 
@@ -291,18 +317,18 @@ final class Runner {
         }
         // 前回終了したときのソケットとロックが残っている。中身は死んでいるのに
         // ファイルとしては在るので、「wayland-0 があるから iosc は動いている」という
-        // 判定が外れる(実機 2026-09-12: iosc 未起動のまま iosc-client が
-        // wl_display_connect failed で落ちた)。起動時に掃除する
-        for d in [runtimeDir, xiosDir] {
-            let fm = FileManager.default
+        // 判定が外れる(実機 2026-09-12)。起動時に掃除する。
+        // 共有バスの置き場(/var/jb/tmp/iosc-shell-bus → tmp/iosc-shell-bus)も同じ
+        let fm = FileManager.default
+        for d in [runtimeDir, xiosDir, tmp + "/iosc-shell-bus"] {
             for n in (try? fm.contentsOfDirectory(atPath: d)) ?? [] where n != "procd" {
                 try? fm.removeItem(atPath: d + "/" + n)
             }
         }
-        log.log("ロケール: \(Runner.locale)(この名前だけが setlocale を通った)")
-        writeWidgetConfig()
-        prepareShellBusDir()
+        firstLaunchSetup()
         for (k, v) in environment() { setenv(k, v, 1) }
+        unsetenv("LANG")
+        unsetenv("LC_ALL")
 
         var fds: [Int32] = [-1, -1]
         guard pipe(&fds) == 0 else { log.log("pipe failed errno \(errno)"); return false }
@@ -319,7 +345,6 @@ final class Runner {
         }.start()
         dup2(pipeWrite, 1)
         dup2(pipeWrite, 2)
-        log.log("stdout/stderr -> pipe (process-global in G1)")
 
         let lib = bundle + "/Frameworks/libLCsys.dylib"
         guard let h = dlopen(lib, RTLD_NOW | RTLD_GLOBAL) else {
@@ -327,33 +352,17 @@ final class Runner {
             return false
         }
         libHandle = h
-        guard let pi = dlsym(h, "lcsys_init"), let ps = dlsym(h, "lcsys_spawn"), let pw = dlsym(h, "lcsys_wait") else {
+        guard let pi = dlsym(h, "lcsys_init"), let ps = dlsym(h, "lcsys_spawn"), let pw = dlsym(h, "lcsys_wait"),
+              let pa = dlsym(h, "lcsys_alive") else {
             log.log("dlsym(lcsys_*) FAILED: \(String(cString: dlerror()))")
             return false
         }
         let initFn = unsafeBitCast(pi, to: InitFn.self)
         spawnFn = unsafeBitCast(ps, to: SpawnFn.self)
         waitFn = unsafeBitCast(pw, to: WaitFn.self)
-        // 古い libLCsys でも G1 のテストは動かしたいので、これだけは無くても致命傷にしない
-        if let pa = dlsym(h, "lcsys_alive") {
-            aliveFn = unsafeBitCast(pa, to: AliveFn.self)
-        } else {
-            log.log("dlsym(lcsys_alive) not found (old libLCsys; status() は pid だけ出す)")
-        }
+        aliveFn = unsafeBitCast(pa, to: AliveFn.self)
         let rc = initFn(bundle, home, tmp, pipeWrite)
-        log.log("lcsys_init -> \(rc); bundle=\(bundle)")
-        // metal-event-broker(root の XPC)の肩代わり。lcsys_init が中で入れているので
-        // ここでは「その libLCsys に入っているか」だけ見る。無ければ古い dylib で、
-        // iosc は起動時に FATAL(iosc.c:6921)で落ちる
-        if dlsym(h, "lcsys_install_xpc_shim") != nil {
-            log.log("lcsys_install_xpc_shim: あり(lcsys_init が導入済み。詳細は xpcshim: の行)")
-        } else {
-            log.log("lcsys_install_xpc_shim: 無し ← 古い libLCsys.dylib。iosc は fence 無しで落ちる")
-        }
-        log.log("home=\(home) tmp=\(tmp)")
-        let fw = (try? FileManager.default.contentsOfDirectory(atPath: bundle + "/Frameworks").count) ?? -1
-        let jb = FileManager.default.fileExists(atPath: bundle + "/jb/usr/bin/ls.lc")
-        log.log("Frameworks/ entries \(fw), jb/usr/bin/ls.lc stub present \(jb)")
+        log.log("lcsys_init -> \(rc); home=\(home) tmp=\(tmp)")
         ready = rc == 0
         return ready
     }
@@ -385,7 +394,7 @@ final class Runner {
         return (status, ms)
     }
 
-    // ------------------------------------------------------------ 待たない起動(G2)
+    // ------------------------------------------------------------ 待たない起動
 
     // 戻ってこないゲスト(iosc は wl_display_run で止まる)用。spawn して pid を返すだけで join しない。
     // lock は spawn の一瞬だけ取る。ここで持ったままにすると run() が二度と動かなくなる。
@@ -418,10 +427,7 @@ final class Runner {
         let snapshot = started.sorted { $0.key < $1.key }
         startedLock.unlock()
         if snapshot.isEmpty { return "started: なし" }
-        guard let aliveFn = aliveFn else {
-            return "started: " + snapshot.map { "pid \($0.key) \($0.value)" }.joined(separator: " | ")
-                 + " (lcsys_alive 無し)"
-        }
+        guard let aliveFn = aliveFn else { return "started: (lcsys_alive 無し)" }
         return snapshot.map { e -> String in
             var st: Int32 = -1
             switch aliveFn(e.key, &st) {
@@ -458,60 +464,6 @@ final class Runner {
         logDirs()
     }
 
-    // iosc(Wayland コンポジタ)の起動フラグ。出どころは全部 upstream の wayland/iosc_options.c。
-    // ソケット類の既定値は /var/jb/tmp/... = 読み取り専用の bundle 配下に落ちるので、全部明示する。
-    //   -g       出力 IOSurface のピクセル寸法(iPhone 14 Pro の画面と同じ 1170x2532)
-    //   -logical 論理解像度(= -g ÷ scale)
-    //   -scale   HiDPI 倍率
-    //   -s       wl_display_add_socket() に渡す名前($XDG_RUNTIME_DIR/<名前> にできる)
-    //   -ddx-sock -json -input-sock -clipboard-sock -wm-sock
-    //            既定は /var/jb/tmp/{iosc-ddx.sock, xios.json, iosc-input.sock,
-    //            iosc-clipboard.sock, iosc-wm.sock}
-    func ioscArgv() -> [String] {
-        [Self.ioscPath,
-         // 14 Pro は 393x852 pt @3x。上の安全領域(59 pt)を引いた範囲を渡し、
-         // 表示側も同じ範囲に置くことで拡大縮小を 1:1 に保つ
-         "-classic", "-logical", Self.logicalArg(), "-scale", "3", "-dpi", "96",
-         "-s", "wayland-0",
-
-         "-ddx-sock", xiosDir + "/ddx",
-         "-json", xiosDir + "/j.json",
-         "-input-sock", xiosDir + "/in",
-         "-clipboard-sock", xiosDir + "/clip",
-         "-wm-sock", xiosDir + "/wm"]
-    }
-
-    // iosc を起動して 2 秒後の様子を見るだけ(G2 の最初の一歩。画も入力もまだ無い)。
-    // 2 秒眠るので**必ずバックグラウンドスレッドから**呼ぶこと。
-    /// Wayland クライアントを 1 本起こす。コンポジタは繋いでくる相手が居ないと描くものが無いので、
-    /// 画面に何かを出すには最低 1 本要る。ioscbg(背景)は fork も dbus も要らない一番軽い相手。
-    func startClient(_ path: String, label: String, args: [String] = [],
-                     settle: TimeInterval = 1.5) {
-        guard setup() else { log.log("\(label): setup 失敗"); return }
-        log.log("=== \(label) 起動 ===")
-        // クライアントが見るのはこの 2 つ。コンポジタと同じ値でなければ繋がらない
-        for k in ["XDG_RUNTIME_DIR", "WAYLAND_DISPLAY"] {
-            if let v = environment()[k] { setenv(k, v, 1); log.log("\(label) env \(k)=\(v)") }
-        }
-        // 同じものを 2 本起こしても窓が重なるだけで得が無い(実機 2026-09-12:
-        // iosc-client が 2 枚重なって「ぐちゃぐちゃ」に見えた)
-        if aliveLabels().contains(label) {
-            log.log("\(label): すでに動いているので起こさない(\(status()))")
-            return
-        }
-        // ソケットの**ファイルがある**ことは iosc が生きている証拠にならない。
-        // 前回の残骸でも在るように見えるので、動いているかを直接見る
-        if !ioscAlive() {
-            log.log("\(label): iosc が動いていないので先に起こす")
-            guard ensureIoscReady() else { log.log("\(label): iosc を起こせなかった"); return }
-        }
-        let pid = start([path] + args, label: label)
-        guard pid >= 0 else { return }
-        Thread.sleep(forTimeInterval: settle)
-        fflush(nil)
-        log.log("\(label) \(String(format: "%.1f", settle)) 秒後: \(status())  [footprint \(footprintMB()) MB]")
-    }
-
     /// いま生きているものの名前。
     func aliveLabels() -> Set<String> {
         startedLock.lock()
@@ -526,9 +478,122 @@ final class Runner {
         return out
     }
 
+    // ------------------------------------------------------------ iosc
+
+    // iosc(Wayland コンポジタ)の起動フラグ。出どころは全部 upstream の wayland/iosc_options.c。
+    // ソケット類の既定値は /var/jb/tmp/... なので、全部こちらの tmp 配下に明示する。
+    func ioscArgv() -> [String] {
+        [Self.ioscPath,
+         "-classic", "-logical", Self.logicalArg(), "-scale", "2", "-dpi", "96",
+         "-s", "wayland-0",
+         "-ddx-sock", xiosDir + "/ddx",
+         "-json", xiosDir + "/j.json",
+         "-input-sock", xiosDir + "/in",
+         "-clipboard-sock", xiosDir + "/clip",
+         "-wm-sock", xiosDir + "/wm"]
+    }
+
+    func ddxPath() -> String { xiosDir + "/ddx" }
+    /// 指も文字も iosc の入力ソケットに直結する。iosc は自前の text-input-v3 で文字を
+    /// 今選ばれている窓に入れる(iosc.c in_dispatch_text → text_input_commit_text)。
+    /// `improxy=0 (local fallback)` はその「いつもの道」で、ios-inputd は KWin などを
+    /// 入れ子にしたときだけの橋渡しなので、ここでは起こさない。
+    func inputPath() -> String { xiosDir + "/in" }
+
+    // start() で起こした iosc がまだ生きているか
+    func ioscAlive() -> Bool {
+        startedLock.lock()
+        let pids = started.filter { $0.value == "iosc" }.keys.sorted()
+        startedLock.unlock()
+        guard let aliveFn = aliveFn else { return !pids.isEmpty }
+        for p in pids {
+            var st: Int32 = -1
+            if aliveFn(p, &st) == 1 { return true }
+        }
+        return false
+    }
+
+    func startIosc() {
+        guard setup() else { log.log("iosc: setup 失敗"); return }
+        // 2 本目は wayland-0.lock を取れずに必ず失敗するが、そこに至るまでに
+        // IOSurface 3 枚と ANGLE の初期化を済ませてしまう。手前で止める。
+        if ioscAlive() {
+            log.log("iosc: すでに起動済み(\(status()))")
+            return
+        }
+        firstLaunchGuestSetup()
+        log.log("=== iosc 起動 ===")
+        for d in [runtimeDir, xiosDir] {
+            try? FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
+        }
+        for (k, v) in environment() { setenv(k, v, 1) }
+        let argv = ioscArgv()
+        // AF_UNIX の sun_path は 104 バイト。実機の $TMPDIR は 89 文字(G0)なので先に測っておく
+        for p in [runtimeDir + "/wayland-0"] + argv.filter({ $0.hasPrefix(xiosDir + "/") }) {
+            let n = p.utf8.count
+            if n > 103 { log.log("*** sun_path の上限 104 B 超え (\(n) B): \(p)") }
+        }
+        let pid = start(argv, label: "iosc")
+        guard pid >= 0 else { return }
+        Thread.sleep(forTimeInterval: 2.0)   // ゲストの出力がパイプの読み手を通るのも待つ
+        fflush(nil)
+        log.log("iosc 2 秒後: \(status())  [footprint \(footprintMB()) MB]")
+        logDirs()
+    }
+
+    // 「画面」の前段: iosc が居なければ起こし、ddx ソケットが現れるまで最大 10 秒待つ。
+    // startIosc() が 2 秒眠るので、**必ずバックグラウンドスレッドから**呼ぶこと。
+    func ensureIoscReady() -> Bool {
+        guard setup() else { log.log("画面: setup 失敗"); return false }
+        if ioscAlive() {
+            log.log("画面: iosc は起動済み(\(status()))")
+        } else {
+            startIosc()
+        }
+        let path = ddxPath()
+        var waited = 0
+        while waited <= 10_000 {
+            if FileManager.default.fileExists(atPath: path) {
+                log.log("画面: ddx ソケットあり(待ち \(waited) ms)")
+                ensureClient()
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+            waited += 100
+        }
+        log.log("画面: ddx ソケットが 10 秒経っても現れない: \(path)")
+        log.log("画面: \(status())")
+        logDirs()
+        return false
+    }
+
+    // ------------------------------------------------------------ クライアント
+
+    /// Wayland クライアントを 1 本起こす。コンポジタは繋いでくる相手が居ないと描くものが無い。
+    func startClient(_ path: String, label: String, args: [String] = [],
+                     settle: TimeInterval = 1.5) {
+        guard setup() else { log.log("\(label): setup 失敗"); return }
+        // 同じものを 2 本起こしても窓が重なるだけで得が無い
+        if aliveLabels().contains(label) {
+            log.log("\(label): すでに動いているので起こさない(\(status()))")
+            return
+        }
+        // ソケットの**ファイルがある**ことは iosc が生きている証拠にならない。
+        // 前回の残骸でも在るように見えるので、動いているかを直接見る
+        if !ioscAlive() {
+            log.log("\(label): iosc が動いていないので先に起こす")
+            guard ensureIoscReady() else { log.log("\(label): iosc を起こせなかった"); return }
+        }
+        log.log("=== \(label) 起動 ===")
+        let pid = start([path] + args, label: label)
+        guard pid >= 0 else { return }
+        Thread.sleep(forTimeInterval: settle)
+        fflush(nil)
+        log.log("\(label) \(String(format: "%.1f", settle)) 秒後: \(status())  [footprint \(footprintMB()) MB]")
+    }
+
     /// 画面に何かを描くクライアントではないもの。数に入れると壁紙が起きなくなる
-    /// (実機 2026-09-12: ios-inputd を 1 本と数えて背景を起こさず、真っ暗のままだった)
-    static let nonDrawing: Set<String> = ["iosc", "ios-inputd", "dbus-daemon"]
+    static let nonDrawing: Set<String> = ["iosc"]
 
     /// iosc 以外で生きているスレッド(= 画面に描く Wayland クライアント)の本数。
     func clientCount() -> Int {
@@ -544,204 +609,62 @@ final class Runner {
         return n
     }
 
-    /// 画面に出すものが 1 つも無ければ背景を起こす。コンポジタは繋いでくる相手が
-    /// 居ないと描くものが無いので、これを忘れると「黒いまま」にしか見えない
-    /// (実機 2026-09-12: 画面 -> 背景 の順で押したため 1 フレームも出なかった)。
+    /// 画面に出すものが 1 つも無ければ壁紙を起こす。
     func ensureClient() {
         let n = clientCount()
         if n > 0 {
             log.log("画面: クライアント \(n) 本が起動済み")
             return
         }
-        log.log("画面: クライアントが 1 本も居ないので背景(ioscbg)を起こす")
+        log.log("画面: クライアントが 1 本も居ないので壁紙(ioscbg)を起こす")
         startBackground()
     }
 
-    /// 背景を描くだけのクライアント。画面に何か出るかを確かめる最小の相手。
+    /// 壁紙(run-shell.sh の 2 番目)。
     func startBackground() { startClient("/var/jb/usr/local/bin/ioscbg", label: "ioscbg") }
-    /// パネル/ドック。cairo と pango で描くので、文字が出れば描画経路は完全に通っている。
+    /// 上の帯(3 番目)。
     func startBar() { startClient("/var/jb/usr/local/bin/ioscbar", label: "ioscbar") }
-    /// 端末。子プロセスを作れないので今は起動に失敗する見込み(G3 で解決)。
-    func startFoot() { startClient(Self.footPath, label: "foot") }
-    /// xiOS 付属の最小クライアント。xdg_toplevel を 1 枚出してフレームを commit するだけで、
-    /// 子プロセスも dbus も要らない。「普通のアプリの窓」が出るかを確かめる相手。
-    func startTestClient() { startClient("/var/jb/usr/local/bin/iosc-client", label: "iosc-client") }
-    /// ドック(下の帯)。バーと同じ iosc-shell の別の顔。
+    /// 下のドック(4 番目)。
     func startDock() { startClient("/var/jb/usr/local/bin/ioscdock", label: "ioscdock") }
-    // ------------------------------------------------------------ dbus とアプリ
-
-    /// 短くしておく。AF_UNIX の sun_path は 104 バイトしかない
-    var dbusSocketPath: String { tmp + "/d" }
-
-    /// アプリ同士の連絡係。`--nofork` があるので分身を作らずそのまま動く。
-    /// つまり iOS が禁じている fork を一度も踏まない。
-    func startDbus() {
-        startClient("/var/jb/usr/bin/dbus-daemon", label: "dbus-daemon",
-                    args: ["--session", "--nofork", "--address=unix:path=" + dbusSocketPath],
-                    settle: 1.2)
-    }
-
-    /// GTK4 のテキストエディタ。**打った文字がその場に出る**はずの窓。
-    func startEditor() {
-        if !aliveLabels().contains("dbus-daemon") { startDbus() }
-        // 自分で起こすときだけ、自分のバスの場所を教える(ドック経由のときは
-        // xiOS のシェルが自分で決めるので、こちらは黙っている)
-        setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=" + dbusSocketPath, 1)
-        startClient("/var/jb/usr/bin/gnome-text-editor", label: "gnome-text-editor", settle: 2.5)
-    }
-
-    /// Wayland 版の回る歯車。dbus も子プロセスも要らないので、
-    /// 「動く絵が届くか」だけを見るのに一番向いている。
-    func startGears() {
-        startClient("/var/jb/usr/bin/es2gears_wayland", label: "es2gears", settle: 1.5)
-    }
-
-    /// 開いている窓の一覧。
+    /// 端末。子シェルの stdio がプロセス全体の 0/1/2 になるので、まだ成立しない(review C6)。
+    func startFoot() { startClient(Self.footPath, label: "foot") }
+    /// xiOS 付属の最小クライアント。xdg_toplevel を 1 枚出してフレームを commit するだけ。
+    func startTestClient() { startClient("/var/jb/usr/local/bin/iosc-client", label: "iosc-client") }
+    /// 開いている窓の一覧(画面全体を覆う)。
     func startOverview() { startClient("/var/jb/usr/local/bin/ioscoverview", label: "ioscoverview") }
+    /// Wayland 版の回る歯車。dbus も子プロセスも要らない。
+    func startGears() { startClient("/var/jb/usr/bin/es2gears_wayland", label: "es2gears", settle: 1.5) }
 
-    /// xiOS のセッションを立ち上げる。こちらが並べるのはここまでで、
-    /// 何を起動するか・どう見せるかは向こうのシェル(バーとドック)の仕事。
+    /// GTK4 のテキストエディタ。GApplication は連絡係(dbus)が要るので、xiOS と同じく
+    /// dbus-run-session に包んで起こす(run-kgx.sh、shell-draw.h sd_launch の落ち先と同じ形)。
+    /// dbus-run-session は fork で dbus-daemon を起こし、アプリを起こして waitpid する。
+    func startEditor() {
+        startClient("/var/jb/usr/bin/dbus-run-session", label: "gnome-text-editor",
+                    args: ["--", "/var/jb/usr/bin/gnome-text-editor"], settle: 3.0)
+    }
+
+    /// xiOS のセッションを立ち上げる: run-shell.sh と同じ順(iosc → 壁紙 → 0.3 秒 → 帯 → ドック)。
+    /// こちらが並べるのはここまでで、何を起動するか・どう見せるかは向こうのシェルの仕事。
     func startSession() {
         guard setup() else { log.log("セッション: setup 失敗"); return }
         log.log("=== セッション開始 ===")
         guard ensureIoscReady() else { log.log("セッション: iosc を起こせなかった"); return }
         startBackground()
+        Thread.sleep(forTimeInterval: 0.3)   // 壁紙を先に map させる(最初のフレームをきれいに)
         startBar()
         startDock()
         log.log("=== セッション: \(status())  [footprint \(footprintMB()) MB] ===")
     }
 
-    /// 試験用の「全部入り」。iosc を起こし、繋がる相手を端から全部起こす。
-    /// どれが出てどれが出ないかを 1 回で見るためのもので、普段使いの順番ではない。
-    /// 端末(foot)は擬似端末が開けないので必ず失敗する。それも含めて見たいので入れてある。
+    /// 試験用の「全部入り」。どれが出てどれが出ないかを 1 回で見るためのもの。
     func startEverything() {
-        guard setup() else { log.log("全部: setup 失敗"); return }
-        log.log("=== 全部起動 ===")
-        guard ensureIoscReady() else { log.log("全部: iosc を起こせなかった"); return }
-        let all: [(String, String)] = [
-            ("/var/jb/usr/local/bin/ioscbar", "ioscbar"),
-            ("/var/jb/usr/local/bin/ioscdock", "ioscdock"),
-            ("/var/jb/usr/local/bin/iosc-client", "iosc-client"),
-            ("/var/jb/usr/bin/es2gears_wayland", "es2gears"),
-            (Self.footPath, "foot"),
-            // 一覧(ioscoverview)は画面全体を覆う切り替え画面で、出すと壁紙もバーも
-            // 隠れる。単体のボタンから出す方が分かるのでここには入れない
-        ]
-        for (path, label) in all {
+        startSession()
+        for (path, label) in [("/var/jb/usr/local/bin/iosc-client", "iosc-client"),
+                              ("/var/jb/usr/bin/es2gears_wayland", "es2gears")] {
             startClient(path, label: label, settle: 0.8)
         }
         log.log("=== 全部起動 おわり: \(status())  [footprint \(footprintMB()) MB] ===")
         logDirs()
-    }
-
-    func startIosc() {
-        guard setup() else { log.log("iosc: setup 失敗"); return }
-        // 2 本目は wayland-0.lock を取れずに必ず失敗するが、そこに至るまでに
-        // IOSurface 3 枚と ANGLE の初期化を済ませてしまうので約 40MB を捨てることになる
-        // (実機 2026-09-12: pid 1007 が exit=1、footprint 82 -> 121MB)。手前で止める。
-        if ioscAlive() {
-            log.log("iosc: すでに起動済み(\(status()))。2 本目は lock を取れないので起こさない")
-            return
-        }
-        log.log("=== iosc 起動 ===")
-        for d in [runtimeDir, xiosDir] {
-            do { try FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true) }
-            catch { log.log("iosc: mkdir \(d) 失敗: \(error.localizedDescription)") }
-        }
-        // 環境変数は G1 ではプロセス全体で 1 つ(environment() が持っている値をそのまま入れ直す)
-        let env = environment()
-        for k in ["XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "IOSC_DEBUG", "IOSC_IGNORE_ACTIVE_SESSION", "XIOS_RUNTIME_TMP"] {
-            guard let v = env[k] else { continue }
-            setenv(k, v, 1)
-            log.log("iosc env \(k)=\(v)")
-        }
-        let argv = ioscArgv()
-        // AF_UNIX の sun_path は 104 バイト。実機の $TMPDIR は 89 文字(G0)なので先に測っておく
-        for p in [runtimeDir + "/wayland-0"] + argv.filter({ $0.hasPrefix(xiosDir + "/") }) {
-            let n = p.utf8.count
-            log.log("path \(n) B\(n > 103 ? "  *** sun_path の上限 104 B 超え ***" : "") \(p)")
-        }
-        let pid = start(argv, label: "iosc")
-        guard pid >= 0 else { return }
-        Thread.sleep(forTimeInterval: 2.0)   // ゲストの出力がパイプの読み手を通るのも待つ
-        fflush(nil)
-        log.log("iosc 2 秒後: \(status())  [footprint \(footprintMB()) MB]")
-        logDirs()
-    }
-
-    // ------------------------------------------------------------ 画面(ddx)
-
-    // クライアント(ScreenView)が繋ぎに行く先。ioscArgv() の -ddx-sock と同じ文字列。
-    func ddxPath() -> String { xiosDir + "/ddx" }
-
-    // ------------------------------------------------------------ 入力の受け渡し
-    //
-    // xiOS の設計では、アプリは iosc の入力ソケットに直結しない。間に ios-inputd が
-    // 居て、そこが「入力メソッド」としてコンポジタに登録され、文字を今選ばれている
-    // 窓に流し込む(`registered as input-method proxy` / `commit_string %zu bytes`)。
-    // 直結していたので `improxy=0 (local fallback)` になり、文字は届いても
-    // 渡す先が無かった(実機 2026-09-12)。
-
-    /// ios-inputd が待つソケット。iosc のものとは別にする(同じだと
-    /// 「something is already listening there」で起動を断られる)
-    var inputdSocketPath: String { xiosDir + "/i2" }
-
-    /// 指(タッチ・ポインタ)の出し先。これは iosc に直結する。
-    /// ios-inputd が知っている記録は MOTION / KEY / TEXT の 3 つだけで(逆アセンブルで確認)、
-    /// TOUCH を送ると語彙に無いものとして接続を切られる。指の係ではないので当然だった。
-    func inputPath() -> String { xiosDir + "/in" }
-
-    /// 文字(TEXT / KEY)の出し先。ios-inputd が居ればそちら、居なければ iosc。
-    /// ここを通すと入力メソッドとして今選ばれている窓へ入る(improxy)。
-    func textPath() -> String {
-        aliveLabels().contains("ios-inputd") ? inputdSocketPath : xiosDir + "/in"
-    }
-
-    /// 入力メソッド。これがコンポジタに登録されて初めて、文字が窓に入る。
-    func startInputd() {
-        startClient("/var/jb/usr/local/bin/ios-inputd", label: "ios-inputd",
-                    args: ["-s", inputdSocketPath], settle: 1.0)
-    }
-
-    // start() で起こした iosc がまだ生きているか
-    func ioscAlive() -> Bool {
-        startedLock.lock()
-        let pids = started.filter { $0.value == "iosc" }.keys.sorted()
-        startedLock.unlock()
-        guard let aliveFn = aliveFn else { return !pids.isEmpty }   // 古い libLCsys: pid の有無で代用
-        for p in pids {
-            var st: Int32 = -1
-            if aliveFn(p, &st) == 1 { return true }
-        }
-        return false
-    }
-
-    // 「画面」ボタンの前段: iosc が居なければ起こし、ddx ソケットが現れるまで最大 10 秒待つ。
-    // startIosc() が 2 秒眠るので、**必ずバックグラウンドスレッドから**呼ぶこと。
-    func ensureIoscReady() -> Bool {
-        guard setup() else { log.log("画面: setup 失敗"); return false }
-        if ioscAlive() {
-            log.log("画面: iosc は起動済み(\(status()))")
-        } else {
-            startIosc()
-        }
-        let path = ddxPath()
-        var waited = 0
-        while waited <= 10_000 {
-            if FileManager.default.fileExists(atPath: path) {
-                log.log("画面: ddx ソケットあり \(path)(待ち \(waited) ms)")
-                // 入力メソッドは土台の一部。画面に繋ぐ前に立てておく
-                if !aliveLabels().contains("ios-inputd") { startInputd() }
-                ensureClient()
-                return true
-            }
-            Thread.sleep(forTimeInterval: 0.1)
-            waited += 100
-        }
-        log.log("画面: ddx ソケットが 10 秒経っても現れない: \(path)")
-        log.log("画面: \(status())")
-        logDirs()
-        return false
     }
 
     // G1 関門: ls / bash / cat / ls 再実行(静的状態の回帰)/ readdir の .lc 剥がし / pkg-config
@@ -751,11 +674,8 @@ final class Runner {
             ["/var/jb/usr/bin/ls", "-la", "/var/jb/usr/bin"],
             ["/var/jb/usr/bin/bash", "-c", "echo hello from bash; echo HOME=$HOME; cd /var/jb/usr/share && echo cwd ok"],
             ["/var/jb/usr/bin/cat", "/var/jb/usr/lib/pkgconfig/wayland-server.pc"],
-            // 4: 1 と同じ。gnulib getopt の静的状態が残っていれば "invalid option" で落ちる
             ["/var/jb/usr/bin/ls", "-la", "/var/jb/usr/bin"],
-            // 5: readdir が ".lc" を剥がしているか。名前は ".so" で終わること(".so.lc" は失格)
             ["/var/jb/usr/bin/ls", "/var/jb/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders"],
-            // 6: libpcre2 が読めるか(_SLJIT_UPDATE_WX_FLAGS を libLCsys が no-op で提供)
             ["/var/jb/usr/bin/pkg-config", "--list-all"],
         ]
         var results: [String] = []

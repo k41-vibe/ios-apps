@@ -50,6 +50,7 @@ struct lc_proc {
     int status;         /* exit code 0..255 */
     int done;
     int fork_child;     /* fork の子(exec で化けるためだけに居る短命なスレッド) */
+    int detached;       /* pthread_detach 済み: join できないので done を見て待つ */
     struct lc_proc *next;
 };
 
@@ -157,6 +158,7 @@ int lcsys_fork_child(void (*fn)(void *), void *arg)
         return -1;
     }
     pthread_detach(p->thread);
+    p->detached = 1;
     return p->pid;
 }
 
@@ -457,18 +459,36 @@ static int first_spawn_of(const char *guest)
 
 /* "ls" -> "/var/jb/usr/bin/ls" (first hit that resolves to a readable file; the
  * file behind it is the jb/usr/bin/ls.lc stub, lcsys_resolve_macho handles that) */
+/* 在るが Mach-O ではない(シェルスクリプトなど)? libiosexec の ie_execve は
+ * ENOEXEC のときだけ #! を読んで `sh script` に書き換えて再挑戦する(execv.c:23-47)。
+ * ENOENT を返すとそこで諦めるので、区別して返す。 */
+static int is_non_macho_file(const char *guest)
+{
+    char host[LCSYS_PATH_MAX];
+    struct stat st;
+    lcsys_resolve_path(guest, host, sizeof host);
+    return lcsys_real.stat(host, &st) == 0 && S_ISREG(st.st_mode);
+}
+
 static int locate_guest(const char *path, char *guest, size_t gcap, char *image, size_t icap)
 {
-    static const char *const dirs[] = { "/var/jb/usr/bin", "/var/jb/usr/local/bin", "/var/jb/bin", NULL };
+    static const char *const dirs[] = { "/var/jb/usr/local/bin", "/var/jb/usr/bin", "/var/jb/bin", NULL };
     int i;
     if (strchr(path, '/')) {
         snprintf(guest, gcap, "%s", path);
-        return lcsys_resolve_macho(guest, image, icap) ? 0 : -1;
+        if (lcsys_resolve_macho(guest, image, icap))
+            return 0;
+        errno = is_non_macho_file(guest) ? ENOEXEC : ENOENT;
+        return -1;
     }
     for (i = 0; dirs[i]; i++) {
         snprintf(guest, gcap, "%s/%s", dirs[i], path);
         if (lcsys_resolve_macho(guest, image, icap))
             return 0;
+        if (is_non_macho_file(guest)) {
+            errno = ENOEXEC;
+            return -1;
+        }
     }
     errno = ENOENT;
     return -1;
@@ -519,8 +539,10 @@ int lcsys_spawn(const char *path, char *const argv[], char *const envp[], int fd
     lcsys_resolve_real();
 
     if (locate_guest(path, guest, sizeof guest, image, sizeof image) != 0) {
-        lcsys_log("spawn %s: not found (errno %d)", path, errno);
-        errno = ENOENT;
+        int saved = errno;
+        lcsys_log("spawn %s: %s (errno %d)", path,
+                  saved == ENOEXEC ? "Mach-O ではない(スクリプト?)" : "not found", saved);
+        errno = saved;
         return -1;
     }
     /* Fresh static state per "process": dyld hands back the SAME image for the same path, so a
@@ -646,7 +668,7 @@ int lcsys_alive(int pid, int *status)
     return alive;
 }
 
-int lcsys_wait(int pid, int *status)
+static struct lc_proc *unlink_proc(int pid)
 {
     struct lc_proc *p, **pp;
     pthread_mutex_lock(&procs_lock);
@@ -657,13 +679,73 @@ int lcsys_wait(int pid, int *status)
         }
     }
     pthread_mutex_unlock(&procs_lock);
+    return p;
+}
+
+/* 終わるまで待って回収する。detached(fork の子)は join できないので done を見る。
+ * done=1 はスレッドの最後の書き込みで、その後は p を触らないので、見えたら free してよい。 */
+static void join_proc(struct lc_proc *p)
+{
+    if (p->detached) {
+        while (!p->done)
+            usleep(5000);
+    } else {
+        pthread_join(p->thread, NULL);
+    }
+}
+
+int lcsys_wait(int pid, int *status)
+{
+    struct lc_proc *p = unlink_proc(pid);
     if (!p) {
         errno = ECHILD;
         return -1;
     }
-    pthread_join(p->thread, NULL);
+    join_proc(p);
     if (status)
         *status = p->done ? p->status : -1;
     free_proc(p);
+    return 0;
+}
+
+/* waitpid 相当(lcsys.c の waitpid 横取りが呼ぶ)。
+ * nohang: 動いていれば 0 を返し、回収しない。 */
+int lcsys_waitpid(int pid, int *status, int nohang)
+{
+    struct lc_proc *p;
+    int st = -1;
+
+    if (nohang) {
+        int alive = lcsys_alive(pid, &st);
+        if (alive < 0)
+            return -1;      /* errno ECHILD */
+        if (alive == 1)
+            return 0;
+    }
+    p = unlink_proc(pid);
+    if (!p) {
+        errno = ECHILD;
+        return -1;
+    }
+    join_proc(p);
+    if (status)
+        *status = p->done ? p->status : 0;
+    free_proc(p);
+    return pid;
+}
+
+/* kill 相当。スレッドは安全に止められないので、知っている pid なら記録だけして 0。
+ * sig 0(生存確認)は本来の意味どおり。 */
+int lcsys_kill(int pid, int sig)
+{
+    int st = -1;
+    int alive = lcsys_alive(pid, &st);
+    if (alive < 0) {
+        errno = ESRCH;
+        return -1;
+    }
+    if (sig != 0)
+        lcsys_log("kill(%d, %d): 擬似 pid はスレッドなので止められない(%s)", pid, sig,
+                  alive ? "動いたまま" : "もう終わっている");
     return 0;
 }

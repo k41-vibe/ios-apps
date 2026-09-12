@@ -1,3 +1,0 @@
-This marker makes .github/workflows/build.yml run the ubuntu "stage" job
-(tools/xios/stage.py) before building this app and hand its output to
-postbuild.sh as $STAGE_DIR.

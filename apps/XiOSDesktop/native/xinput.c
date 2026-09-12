@@ -65,6 +65,12 @@ struct xi_conn {
     pthread_t reaper;
     volatile int closing;
     unsigned long sent;
+    /* サーバーから来る TRAITS(code=content_hint, state=content_purpose, mods=enabled)。
+     * 「文字を受け取る欄が選ばれた/外れた」の合図で、表示側がこれでキーボードを出し入れする
+     * (osk-plan.md)。同じ値の再送も 1 件と数える: 同じ欄の中で入力が続いている合図で、
+     * 保留中の「下げる」を取り消すのに使う */
+    unsigned long traits_seq;
+    uint32_t tr_hint, tr_purpose, tr_enabled;
 };
 
 /* ------------------------------------------------------------ 送受信の下回り */
@@ -103,7 +109,7 @@ static int read_all(int fd, void *buf, size_t n)
     return 0;
 }
 
-/* サーバーからの TRAITS / HAPTIC を読んで捨てるだけ。読まないと詰まる。 */
+/* サーバーからの TRAITS / HAPTIC を読む。読まないと詰まる。TRAITS は控えておく。 */
 static void *reaper_main(void *arg)
 {
     struct xi_conn *c = arg;
@@ -114,6 +120,14 @@ static void *reaper_main(void *arg)
         if (m.magic != XIOS_MAGIC) {
             lcsys_log("xinput: 受信が化けている magic=0x%x -> 読むのをやめる", m.magic);
             break;
+        }
+        if (m.type == XI_MSG_TRAITS) {
+            pthread_mutex_lock(&c->lock);
+            c->tr_hint = (uint32_t)m.c;
+            c->tr_purpose = m.window_id;
+            c->tr_enabled = (uint32_t)m.d;
+            c->traits_seq++;
+            pthread_mutex_unlock(&c->lock);
         }
         if (m.length > XI_MAX_TEXT) {
             lcsys_log("xinput: %u B のペイロードはあり得ない -> 読むのをやめる", m.length);
@@ -188,6 +202,11 @@ void *xi_connect(const char *path)
     tv.tv_sec = 3;
     tv.tv_usec = 0;
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    /* 相手が閉じた口に書いてもアプリごと落ちないように(IoscInput.c:35-38 と同じ) */
+    {
+        int on = 1;
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof on);
+    }
 
     c = calloc(1, sizeof *c);
     if (!c) {
@@ -281,6 +300,22 @@ int xi_axis(void *c, int dx256, int dy256, int source, int stop, int mods)
 int xi_output(void *c, int logical_w, int logical_h, int rotation)
 {
     return send_msg(c, XI_MSG_OUTPUT, logical_w, logical_h, rotation & 3, 0, 0, NULL, 0);
+}
+
+/* 最後に受けた TRAITS。戻り値は受信の通し番号(変わっていなければ新しい TRAITS は無い)。 */
+unsigned long xi_traits(void *h, uint32_t *hint, uint32_t *purpose, uint32_t *enabled)
+{
+    struct xi_conn *c = h;
+    unsigned long seq;
+    if (!c)
+        return 0;
+    pthread_mutex_lock(&c->lock);
+    if (hint) *hint = c->tr_hint;
+    if (purpose) *purpose = c->tr_purpose;
+    if (enabled) *enabled = c->tr_enabled;
+    seq = c->traits_seq;
+    pthread_mutex_unlock(&c->lock);
+    return seq;
 }
 
 unsigned long xi_sent(void *h)

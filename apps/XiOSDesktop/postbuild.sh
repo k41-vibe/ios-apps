@@ -55,7 +55,7 @@ echo "== libLCsys.dylib load commands"
 otool -L "$OUT"
 otool -l "$OUT" | grep -A2 LC_REEXPORT_DYLIB
 echo "== exported overrides (expect open/stat/statfs/exit/dlopen/lcsys_*/xs_*/xi_*):"
-nm -gU "$OUT" | grep -E ' _(open|stat|lstat|exit|_exit|fork|dlopen|realpath|posix_spawn|lcsys_init|lcsys_spawn|lcsys_wait|lcsys_install_xpc_shim|lcsys_shared_event_for_token|xs_connect|xs_poll|xs_release|xs_presented|xs_surface|xs_close|xi_connect|xi_touch|xi_text|xi_key|statfs|statvfs|fork|vfork|lc_savectx|lc_restorectx|lcsys_fork_child)($|[$])' || true
+nm -gU "$OUT" | grep -E ' _(open|stat|lstat|exit|_exit|fork|dlopen|realpath|posix_spawn|lcsys_init|lcsys_spawn|lcsys_wait|lcsys_install_xpc_shim|lcsys_shared_event_for_token|xs_connect|xs_poll|xs_release|xs_presented|xs_surface|xs_close|xi_connect|xi_touch|xi_text|xi_key|statfs|statvfs|fork|vfork|waitpid|wait4|kill|lc_savectx|lc_restorectx|lcsys_fork_child|xs_pacing|xi_traits)($|[$])' || true
 
 echo "== copying staged tree from $STAGE_DIR"
 test -d "$STAGE_DIR/Frameworks" || { echo "::error::$STAGE_DIR/Frameworks missing"; exit 1; }
@@ -102,6 +102,14 @@ PY
 # Darwin の libc は同じ関数を 2 つの名前で出すことがある(`_fopen` と `_fopen$DARWIN_EXTSN`)。
 # 基本名しか定義していないと、もう片方で呼ぶバイナリは経路変換を素通りする。
 # 2026-09-12 の実機で xkb のキーマップが読めなかったのがこれ(132 本が取りこぼし)。
+# 未定義シンボルが実機で解決できるかを二段名前空間の library ordinal で検査する
+# (G0 で libpcre2 の _SLJIT_UPDATE_WX_FLAGS 欠落を見つけた検査。今までは手で回していた)
+echo "== auditing undefined symbols against what the bundle + iOS provide"
+python3 "$HERE/../../tools/xios/audit_symbols.py" "$FW" || {
+  echo "::error::解決できない未定義シンボルがある(上の一覧)。lcsys.c で定義するか、提供パッケージを種に足す"
+  exit 1
+}
+
 echo "== auditing libc alias names (_fopen vs _fopen\$DARWIN_EXTSN)"
 python3 "$HERE/../../tools/xios/audit_aliases.py" "$OUT" "$FW" || {
   echo "::error::libLCsys が別名を落としている(上の MISS 行)。lcsys.c に別名の定義を足す"

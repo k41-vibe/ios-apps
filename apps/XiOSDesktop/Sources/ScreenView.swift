@@ -25,6 +25,7 @@ struct XSurfaceAPI {
     typealias CloseFn     = @convention(c) (UnsafeMutableRawPointer?) -> Void
     typealias TokenFn     = @convention(c) (UnsafeMutableRawPointer?) -> UnsafePointer<UInt8>?
     typealias EventFn     = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, Int) -> UnsafeMutableRawPointer?
+    typealias PacingFn    = @convention(c) (UnsafeMutableRawPointer?, Int32, UInt32, Int32, Int32) -> Int32
 
     let connect: ConnectFn
     let poll: PollFn
@@ -37,6 +38,7 @@ struct XSurfaceAPI {
     let releaseToken: TokenFn
     let lastFenceToken: TokenFn
     let eventForToken: EventFn
+    let pacing: PacingFn
 
     init?(handle: UnsafeMutableRawPointer, log: ConsoleLog) {
         var missing: [String] = []
@@ -47,9 +49,9 @@ struct XSurfaceAPI {
         let c = sym("xs_connect"), p = sym("xs_poll"), s = sym("xs_surface"), n = sym("xs_count")
         let i = sym("xs_info"), r = sym("xs_release"), pr = sym("xs_presented"), cl = sym("xs_close")
         let rt = sym("xs_release_token"), ft = sym("xs_last_fence_token")
-        let ev = sym("lcsys_shared_event_for_token")
+        let ev = sym("lcsys_shared_event_for_token"), pc = sym("xs_pacing")
         guard missing.isEmpty, let c = c, let p = p, let s = s, let n = n, let i = i, let r = r,
-              let pr = pr, let cl = cl, let rt = rt, let ft = ft, let ev = ev else {
+              let pr = pr, let cl = cl, let rt = rt, let ft = ft, let ev = ev, let pc = pc else {
             log.log("画面: libLCsys.dylib に \(missing.joined(separator: ", ")) が無い ← 古い dylib")
             return nil
         }
@@ -64,6 +66,7 @@ struct XSurfaceAPI {
         releaseToken = unsafeBitCast(rt, to: TokenFn.self)
         lastFenceToken = unsafeBitCast(ft, to: TokenFn.self)
         eventForToken = unsafeBitCast(ev, to: EventFn.self)
+        pacing = unsafeBitCast(pc, to: PacingFn.self)
     }
 }
 
@@ -75,6 +78,8 @@ struct XInputAPI {
     typealias TextFn    = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?) -> Int32
     typealias KeyFn     = @convention(c) (UnsafeMutableRawPointer?, Int32, Int32, Int32) -> Int32
     typealias SentFn    = @convention(c) (UnsafeMutableRawPointer?) -> UInt
+    typealias TraitsFn  = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutablePointer<UInt32>?,
+                                          UnsafeMutablePointer<UInt32>?, UnsafeMutablePointer<UInt32>?) -> UInt
 
     let connect: ConnectFn
     let touch: TouchFn
@@ -82,6 +87,7 @@ struct XInputAPI {
     let text: TextFn
     let key: KeyFn
     let sent: SentFn
+    let traits: TraitsFn
 
     init?(handle: UnsafeMutableRawPointer, log: ConsoleLog) {
         var missing: [String] = []
@@ -90,8 +96,9 @@ struct XInputAPI {
             return p
         }
         let c = sym("xi_connect"), t = sym("xi_touch"), m = sym("xi_motion")
-        let x = sym("xi_text"), k = sym("xi_key"), n = sym("xi_sent")
-        guard missing.isEmpty, let c = c, let t = t, let m = m, let x = x, let k = k, let n = n else {
+        let x = sym("xi_text"), k = sym("xi_key"), n = sym("xi_sent"), tr = sym("xi_traits")
+        guard missing.isEmpty, let c = c, let t = t, let m = m, let x = x, let k = k, let n = n,
+              let tr = tr else {
             log.log("入力: libLCsys.dylib に \(missing.joined(separator: ", ")) が無い ← 古い dylib")
             return nil
         }
@@ -101,6 +108,7 @@ struct XInputAPI {
         text = unsafeBitCast(x, to: TextFn.self)
         key = unsafeBitCast(k, to: KeyFn.self)
         sent = unsafeBitCast(n, to: SentFn.self)
+        traits = unsafeBitCast(tr, to: TraitsFn.self)
     }
 }
 
@@ -142,11 +150,21 @@ final class ScreenClient: NSObject, MTKViewDelegate {
 
     // ---- 入力(第 6 節)。画面と同じ 32 バイトのレコードを別のソケットに流す
     var xin: XInputAPI?
-    private var inputConn: UnsafeMutableRawPointer?   // 指 -> iosc
-    private var textConn: UnsafeMutableRawPointer?    // 文字 -> ios-inputd(入力メソッド)
+    private var inputConn: UnsafeMutableRawPointer?   // 指も文字も iosc の入力ソケットへ
     private var slots: [ObjectIdentifier: Int32] = [:]   // UITouch -> スロット 0..9
     private var lastViewport: MTLViewport?
     private var touchesSent = 0
+
+    // ---- 自動キーボード(osk-plan.md「責任者の方針」)。コンポジタが TRAITS で
+    // 「文字を受け取る欄が選ばれた/外れた」を教えてくるので、それでキーボードを出し入れする。
+    //   - enable で出す、disable で 0.2 秒待ってから下げる(欄から欄への移動で上下させない)
+    //   - 使う人が自分で下げたキーボードは、その欄を離れるまで自動では出さない
+    private var traitsSeq: UInt = 0
+    private var oskAutoShown = false
+    private var oskUserDismissed = false
+    private var oskProgrammaticResign = false
+    private var oskHideWork: DispatchWorkItem?
+    private var lastTraitsEnabled: UInt32 = 0
     // finish() は描画スレッド(描けなかったとき)と Metal の完了ハンドラの両方から
     // 呼ばれるので、その中身だけは直列化する
     private let finishLock = NSLock()
@@ -279,20 +297,51 @@ final class ScreenClient: NSObject, MTKViewDelegate {
             return
         }
         inputConn = c
-        log.log("入力: 指の出し先 \(path)")
+        log.log("入力: 接続 \(path)")
     }
 
-    /// 文字の出し先。ios-inputd が知っている記録は MOTION / KEY / TEXT だけなので、
-    /// 指(TOUCH)を同じ口に流すと切られる。だから口を 2 つに分ける。
-    func connectText(path: String) {
-        guard textConn == nil, let xin = xin else { return }
-        guard let c = path.withCString({ xin.connect($0) }) else {
-            log.log("入力: 文字の口に繋がらない \(path) errno \(errno)")
-            return
+    /// TRAITS(code=hint, state=purpose, mods=enabled)を毎フレーム見て、
+    /// 変化があればキーボードを出し入れする。draw(in:) から主スレッドで呼ぶ。
+    private func serviceTraits() {
+        guard let conn = inputConn, let xin = xin, let v = view else { return }
+        var hint: UInt32 = 0, purpose: UInt32 = 0, enabled: UInt32 = 0
+        let seq = xin.traits(conn, &hint, &purpose, &enabled)
+        guard seq != traitsSeq else { return }
+        traitsSeq = seq
+        if enabled != lastTraitsEnabled {
+            log.log("入力: 欄が\(enabled != 0 ? "選ばれた" : "外れた") hint=0x\(String(hint, radix: 16)) purpose=\(purpose)")
         }
-        textConn = c
-        log.log("入力: 文字の出し先 \(path)")
+        lastTraitsEnabled = enabled
+        if enabled != 0 {
+            oskHideWork?.cancel(); oskHideWork = nil
+            if !v.isFirstResponder && !oskUserDismissed {
+                if v.becomeFirstResponder() { oskAutoShown = true }
+            }
+        } else {
+            oskUserDismissed = false
+            guard oskAutoShown, oskHideWork == nil else { return }
+            let w = DispatchWorkItem { [weak self] in
+                guard let self = self, let v = self.view else { return }
+                self.oskHideWork = nil
+                guard self.oskAutoShown else { return }
+                self.oskProgrammaticResign = true
+                _ = v.resignFirstResponder()
+                self.oskProgrammaticResign = false
+                self.oskAutoShown = false
+            }
+            oskHideWork = w
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: w)
+        }
     }
+
+    /// ScreenMTKView から: 使う人が自分でキーボードを閉じた(こちらの resign ではない)
+    func userResignedKeyboard() {
+        if !oskProgrammaticResign {
+            if lastTraitsEnabled != 0 { oskUserDismissed = true }
+            oskAutoShown = false
+        }
+    }
+    func userOpenedKeyboard() { oskUserDismissed = false }
 
     /// 画面上の点(ポイント)を出力(IOSurface)のピクセルに戻す。範囲外は nil。
     /// 逆変換は描画と同じ aspectFit を使う。ビューポートは drawableSize と同じ
@@ -348,13 +397,13 @@ final class ScreenClient: NSObject, MTKViewDelegate {
 
     /// X の keysym を押して離す。改行 0xff0d、後退 0xff08。
     func sendKey(_ keysym: Int32) {
-        guard let conn = textConn ?? inputConn, let xin = xin else { return }
+        guard let conn = inputConn, let xin = xin else { return }
         _ = xin.key(conn, keysym, 1, 0)
         _ = xin.key(conn, keysym, 0, 0)
     }
 
     func send(text: String) {
-        guard let conn = textConn ?? inputConn, let xin = xin, !text.isEmpty else { return }
+        guard let conn = inputConn, let xin = xin, !text.isEmpty else { return }
         _ = text.withCString { xin.text(conn, $0) }
         log.log("入力: text \(text.count) 文字")
     }
@@ -381,6 +430,15 @@ final class ScreenClient: NSObject, MTKViewDelegate {
 
     func draw(in view: MTKView) {
         guard let conn = conn, !disconnected else { return }
+        serviceTraits()
+        // 表示の時計をコンポジタに渡す(XIOS_MSG_PACING)。iosc はこれで
+        // pacing=event-loop から vblank に切り替わる(xios-app.md)。位相は分からないので
+        // 「次の垂直同期までおよそ半周期」として送る。60 フレームに 1 回で足りる
+        if frames % 60 == 0 {
+            let fps = max(view.preferredFramesPerSecond, 1)
+            let interval = UInt32(1_000_000 / fps)
+            _ = api.pacing(conn, Int32(interval / 2), interval, 30_000, Int32(fps) * 1000)
+        }
 
         // 1 回の draw で溜まっている DIRTY を全部引き取る。描くのは一番新しい 1 枚だけ
         // だが、引き取った分は全部 RELEASED を返す(返さないと 3 枚とも pending になって
@@ -559,14 +617,30 @@ final class ScreenMTKView: MTKView, UIKeyInput {
         get { .asciiCapable }
         set { }
     }
+    // osk-plan.md「Return と Tab は key、text ではない」: TEXT で送ると欄に改行の文字が
+    // 入るだけで、決定にならない。塊ごとに TEXT と KEY に分けて送る
     func insertText(_ text: String) {
-        if text.allSatisfy({ $0.isNewline }) {
-            client?.sendKey(0xff0d)      // Return
-        } else {
-            client?.send(text: text)
+        var run = ""
+        func flush() { if !run.isEmpty { client?.send(text: run); run = "" } }
+        for ch in text {
+            if ch.isNewline { flush(); client?.sendKey(0xff0d) }        // XK_Return
+            else if ch == "\t" { flush(); client?.sendKey(0xff09) }      // XK_Tab
+            else { run.append(ch) }
         }
+        flush()
     }
-    func deleteBackward() { client?.sendKey(0xff08) }
+    func deleteBackward() { client?.sendKey(0xff08) }                    // XK_BackSpace
+
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        if ok { client?.userOpenedKeyboard() }
+        return ok
+    }
+    override func resignFirstResponder() -> Bool {
+        let ok = super.resignFirstResponder()
+        if ok { client?.userResignedKeyboard() }
+        return ok
+    }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         client?.send(touches: touches, phase: 1, in: self)

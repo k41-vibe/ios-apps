@@ -1,3 +1,5 @@
+> **2026-09-13 追記**: この文書の「最小改変一覧」は不要になった。iosc も iosc-shell も **1 行も改変せず**に動いている(`fork` はスタック複製、exec は pid 引き継ぎ、XPC は ObjC のすり替え)。`docs/review-2026-09-13.md` を参照。
+
 # iosc をアプリ内スレッドで動かすための設計メモ(2026-09-11 調査)
 
 出典: https://github.com/MaxLeiter/jailbreak/tree/main/x11 (MIT)。行番号は調査時点。

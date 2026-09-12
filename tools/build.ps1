@@ -11,6 +11,17 @@ param(
     [string]$Dest = "C:\Users\rutoi\SharedFolder\ios-apps"
 )
 $ErrorActionPreference = "Stop"
+
+# git は警告(CRLF の置換など)を stderr に書く。$ErrorActionPreference="Stop" のままだと
+# それが NativeCommandError になって止まる(2026-09-13 に開発ビルドが git add で落ちた)。
+# git を呼ぶときだけ Continue にし、終了コードで判断する。
+function Invoke-Git {
+    param([Parameter(ValueFromRemainingArguments = $true)] $GitArgs)
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { & git.exe -c core.safecrlf=false @GitArgs 2>$null } finally { $ErrorActionPreference = $old }
+    if ($LASTEXITCODE -ne 0) { throw "git $($GitArgs -join ' ') failed ($LASTEXITCODE)" }
+}
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
 if (-not (Test-Path "apps\$Name\project.yml")) { throw "apps\$Name\project.yml がありません" }
@@ -43,11 +54,12 @@ if ($Release) {
     $text = $text -replace '## \[Unreleased\]', "## [Unreleased]`n`n## [$Release] - $today"
     [IO.File]::WriteAllText($changelog, $text, (New-Object Text.UTF8Encoding $false))
 
-    git add -A
-    git commit -q -m "release: $Name v$Release" 2>&1 | Out-Null
-    git push -q origin main
-    git tag -a $tag -m "$Name v$Release"
-    git push -q origin $tag
+    # リリースも作りかけを巻き込まないよう、このアプリと共有ツールだけを積む
+    Invoke-Git add "apps/$Name" tools docs .github
+    Invoke-Git commit -q -m "release: $Name v$Release"
+    Invoke-Git push -q origin main
+    Invoke-Git tag -a $tag -m "$Name v$Release"
+    Invoke-Git push -q origin $tag
     Write-Host "タグ $tag を push。CI がリリースビルドを開始します"
 } else {
     # ---- 開発ビルド: コミット/push してから workflow_dispatch ----
@@ -55,20 +67,20 @@ if ($Release) {
         # 作りかけを巻き込まないよう、このアプリと共有ツールだけを commit する
         # (以前 git add -A で、別作業中のエージェントが書いた途中のファイルを
         #  ビルドに載せかけた。何を積んだかは下に出す)
-        git add "apps/$Name" tools docs .github 2>&1 | Out-Null
+        Invoke-Git add "apps/$Name" tools docs .github
         if (git diff --cached --quiet) {
             Write-Host "commit するものなし (HEAD をビルドします)"
         } else {
             Write-Host "--- この commit に載るもの ---"
             git diff --cached --name-only | ForEach-Object { Write-Host "  $_" }
-            git commit -q -m "build: $Name"
+            Invoke-Git commit -q -m "build: $Name"
         }
         $stray = git status --porcelain
         if ($stray) {
             Write-Host "--- commit していない変更 (ビルドには載りません) ---"
             $stray | ForEach-Object { Write-Host "  $_" }
         }
-        git push -q origin main 2>&1 | Out-Null
+        Invoke-Git push -q origin main
     }
     gh workflow run build.yml -f app=$Name | Out-Null
 }
