@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-09-12
+
 ### Fixed
 - **iOS では `task_for_pid()` が自分自身の pid に対しても通らない**(実機 2026-09-12:
   `xios: task_for_pid(1199) failed: 0x5 ((os/kern) failure)`)。macOS とは違う点で、
