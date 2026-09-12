@@ -187,16 +187,18 @@ final class Runner {
         return (status, ms)
     }
 
-    // G1 関門: ls, bash -c, pkg-config, そして ls をもう一度(静的状態の回帰テスト)
+    // G1 関門: ls / bash / cat / ls 再実行(静的状態の回帰)/ readdir の .lc 剥がし / pkg-config
     func runG1Tests() {
         log.log("=== G1 tests start ===")
-        // pkg-config は libpcre の版ずれで読めない(G1 の関門から外し、参考として最後に回す)
         let seq: [[String]] = [
             ["/var/jb/usr/bin/ls", "-la", "/var/jb/usr/bin"],
             ["/var/jb/usr/bin/bash", "-c", "echo hello from bash; echo HOME=$HOME; cd /var/jb/usr/share && echo cwd ok"],
             ["/var/jb/usr/bin/cat", "/var/jb/usr/lib/pkgconfig/wayland-server.pc"],
+            // 4: 1 と同じ。gnulib getopt の静的状態が残っていれば "invalid option" で落ちる
             ["/var/jb/usr/bin/ls", "-la", "/var/jb/usr/bin"],
-            ["/var/jb/usr/bin/ls", "-l", "/var/jb/usr/share/X11/xkb"],
+            // 5: readdir が ".lc" を剥がしているか。名前は ".so" で終わること(".so.lc" は失格)
+            ["/var/jb/usr/bin/ls", "/var/jb/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders"],
+            // 6: libpcre2 が読めるか(_SLJIT_UPDATE_WX_FLAGS を libLCsys が no-op で提供)
             ["/var/jb/usr/bin/pkg-config", "--list-all"],
         ]
         var results: [String] = []

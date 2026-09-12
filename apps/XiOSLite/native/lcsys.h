@@ -84,6 +84,9 @@ struct lcsys_real {
     int (*access)(const char *, int);
     int (*faccessat)(int, const char *, int, int);
     DIR *(*opendir)(const char *);
+    int (*closedir)(DIR *);
+    struct dirent *(*readdir)(DIR *);
+    int (*readdir_r)(DIR *, struct dirent *, struct dirent **);
     ssize_t (*readlink)(const char *, char *, size_t);
     char *(*realpath)(const char *, char *);
     int (*mkdir)(const char *, mode_t);
@@ -98,6 +101,20 @@ struct lcsys_real {
 };
 extern struct lcsys_real lcsys_real;
 void lcsys_resolve_real(void);
+
+/* Open-directory registry (pathmap.c), used by the readdir overrides in lcsys.c.
+ * Only directories whose HOST path is under <bundle>/jb are registered; readdir on
+ * anything else must be passed through untouched. */
+struct lc_dir;
+void lcsys_dir_register(DIR *d, const char *host_path);
+void lcsys_dir_forget(DIR *d);
+struct lc_dir *lcsys_dir_find(DIR *d);
+/* Per-DIR scratch entry, same ownership rule as libc's own readdir buffer:
+ * valid until the next readdir() on that DIR. */
+struct dirent *lcsys_dir_scratch(struct lc_dir *ld);
+/* Rewrite one entry of a jb directory. dst may alias src (readdir_r).
+ *    0 = use src unchanged,  1 = dst was filled,  -1 = skip this entry */
+int lcsys_dir_filter(struct lc_dir *ld, const struct dirent *src, struct dirent *dst);
 
 /* procd hooks used by the exit() override (procd.c) */
 int lcsys_guest_exit(int status);   /* returns only if the caller is not a guest thread */

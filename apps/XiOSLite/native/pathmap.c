@@ -18,8 +18,13 @@
  * libfoo.dylib). The guest still sees /var/jb/<name>: when the mapped leaf is
  * missing but "<leaf>.lc" exists, the resolver returns the .lc path, so
  * stat/access/open of the guest path report the stub. lcsys_resolve_macho()
- * turns the stub text into <bundle>/Frameworks/<flat>. (readdir is not
- * faked: `ls /var/jb/usr/bin` lists ls.lc, not ls.)
+ * turns the stub text into <bundle>/Frameworks/<flat>.
+ *
+ * Directory listings hide the suffix again (lcsys_dir_* at the bottom of this
+ * file, driven by the readdir/readdir_r overrides in lcsys.c): without that
+ * `ls /var/jb/usr/bin` would print "ls.lc", and every glib/GTK module scan
+ * (gdk-pixbuf loaders, gio modules, gtk print backends - all of them
+ * "readdir this directory, take the *.so") would find nothing.
  *
  * Only lcsys_real.* is used for filesystem access (the bare names would bind
  * to our own overrides in lcsys.c).
@@ -28,7 +33,9 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -280,4 +287,110 @@ char *lcsys_resolve_macho(const char *in, char *out, size_t cap)
         snprintf(out, cap, "%s/%s", lcsys_cfg.frameworks, flat);
     }
     return out;
+}
+
+/* ------------------------------------------ open directories / readdir */
+
+/*
+ * Registered by the opendir() override for directories whose HOST path is under
+ * <bundle>/jb. Nodes are recycled but never freed, so a pointer returned by
+ * lcsys_dir_find() stays valid even if another thread closes the DIR (using a
+ * DIR concurrently with closedir is undefined in libc too).
+ */
+struct lc_dir {
+    DIR *dir;                   /* NULL = free slot */
+    char host[LCSYS_PATH_MAX];  /* mapped host path of the directory */
+    struct dirent scratch;      /* per-DIR rewrite buffer, same lifetime rule as
+                                 * libc's own: valid until the next readdir(d) */
+    struct lc_dir *next;
+};
+
+static struct lc_dir *dir_list;
+static pthread_mutex_t dir_lock = PTHREAD_MUTEX_INITIALIZER;
+
+void lcsys_dir_register(DIR *d, const char *host_path)
+{
+    struct lc_dir *ld, *slot = NULL;
+    if (!d || !host_path || !lcsys_ready || !under_jb(host_path))
+        return; /* outside the jb tree: nothing is ever faked */
+    pthread_mutex_lock(&dir_lock);
+    for (ld = dir_list; ld; ld = ld->next) {
+        if (ld->dir == d) { /* a recycled DIR address */
+            slot = ld;
+            break;
+        }
+        if (!slot && !ld->dir)
+            slot = ld;
+    }
+    if (!slot && (slot = (struct lc_dir *)calloc(1, sizeof *slot)) != NULL) {
+        slot->next = dir_list;
+        dir_list = slot;
+    }
+    if (slot) {
+        lc_strlcpy(slot->host, host_path, sizeof slot->host);
+        slot->dir = d;
+    }
+    pthread_mutex_unlock(&dir_lock);
+}
+
+void lcsys_dir_forget(DIR *d)
+{
+    struct lc_dir *ld;
+    if (!d)
+        return;
+    pthread_mutex_lock(&dir_lock);
+    for (ld = dir_list; ld; ld = ld->next) {
+        if (ld->dir == d) {
+            ld->dir = NULL; /* free slot, node kept */
+            break;
+        }
+    }
+    pthread_mutex_unlock(&dir_lock);
+}
+
+struct lc_dir *lcsys_dir_find(DIR *d)
+{
+    struct lc_dir *ld;
+    if (!d)
+        return NULL;
+    pthread_mutex_lock(&dir_lock);
+    for (ld = dir_list; ld; ld = ld->next) {
+        if (ld->dir == d)
+            break;
+    }
+    pthread_mutex_unlock(&dir_lock);
+    return ld;
+}
+
+struct dirent *lcsys_dir_scratch(struct lc_dir *ld)
+{
+    return ld ? &ld->scratch : NULL;
+}
+
+/* Darwin's kernel rounds a dirent record up to 8 bytes; keep d_reclen consistent
+ * with the shortened d_name instead of leaving the ".lc" length behind. */
+#define LC_DIRENT_RECLEN(namlen)     ((((size_t)offsetof(struct dirent, d_name) + (size_t)(namlen) + 1) + 7u) & ~(size_t)7u)
+
+int lcsys_dir_filter(struct lc_dir *ld, const struct dirent *src, struct dirent *dst)
+{
+    char probe[LCSYS_PATH_MAX];
+    struct stat st;
+    size_t sl = strlen(LCSYS_STUB_SUFFIX), nl;
+
+    if (!ld || !src || !dst)
+        return 0;
+    nl = strnlen(src->d_name, sizeof src->d_name);
+    if (nl <= sl || memcmp(src->d_name + nl - sl, LCSYS_STUB_SUFFIX, sl) != 0)
+        return 0; /* not a stub: hand the caller the real entry */
+    nl -= sl;
+    /* both "<name>.lc" and a real "<name>" in the same directory: list only the real one */
+    if (snprintf(probe, sizeof probe, "%s/%.*s", ld->host, (int)nl, src->d_name) < (int)sizeof probe &&
+        lcsys_real.lstat(probe, &st) == 0)
+        return -1;
+    if (dst != src)
+        *dst = *src;
+    dst->d_name[nl] = '\0';
+    dst->d_namlen = (unsigned short)nl;
+    dst->d_reclen = (unsigned short)LC_DIRENT_RECLEN(nl);
+    return 1;
 }

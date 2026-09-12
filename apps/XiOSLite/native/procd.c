@@ -8,9 +8,11 @@
  * (the same call dyld/libdyld makes for an LC_MAIN executable; LiveContainer
  * launches guest apps this way, ios_system runs its commands this way).
  *
- * pids are synthetic (>= 1000). The image is never dlclose'd: a second spawn
- * of the same binary re-enters main() with whatever static state the first
- * run left behind - that is exactly what the G1 "ls twice" test looks for.
+ * pids are synthetic (>= 1000). The image is never dlclose'd, and dyld hands the
+ * same image back for the same path, so a second spawn of one binary would re-enter
+ * main() on top of the first run's statics - the G1 "ls twice" test. Two defences:
+ * each spawn dlopens a private copy under <tmp>/procd (new path = new image), and
+ * whatever getopt state the image exports is reset (reset_guest_getopt).
  *
  * G1 limits: fd 0/1/2, cwd and environ are shared by every guest thread
  * (fd_out/fd_err are accepted but ignored). exit()/_exit() from a guest
@@ -161,48 +163,142 @@ static void free_proc(struct lc_proc *p)
     free(p);
 }
 
-/* Copy <image> to <tmp>/procd/<n>-<basename>; returns 0 and fills out. */
+/* Copy <image> to <tmp>/procd/<n>-<basename>; returns 0 and fills out.
+ *
+ * Only lcsys_real.* here: a bare open()/mkdir()/unlink() from inside this dylib binds
+ * to OUR OWN overrides in lcsys.c, which push the argument through lcsys_resolve_path.
+ * These are HOST paths (<tmp> is .../Containers/Data/Application/<uuid>/tmp, and
+ * "/var/mobile" maps to HOME), so they came back mangled and every copy failed with
+ * ENOENT on device. read/write/close are not overridden and are fine as-is.
+ */
 static int make_private_copy(const char *image, char *out, size_t cap)
 {
     static int counter = 0;
     static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
     char dir[LCSYS_PATH_MAX];
     const char *base = strrchr(image, '/');
-    int in, outfd, n;
+    const char *step = NULL, *where = NULL;
+    int in = -1, outfd = -1, n, err;
     char buf[65536];
-    ssize_t r;
+    ssize_t r = 0;
 
+    lcsys_resolve_real();
+    if (!lcsys_real.open || !lcsys_real.mkdir || !lcsys_real.unlink) {
+        lcsys_log("private copy: real open/mkdir/unlink unavailable");
+        errno = ENOSYS;
+        return -1;
+    }
     base = base ? base + 1 : image;
     snprintf(dir, sizeof dir, "%s/procd", lcsys_cfg.tmp);
-    mkdir(dir, 0700);
+    if (lcsys_real.mkdir(dir, 0700) != 0 && errno != EEXIST) {
+        step = "mkdir";
+        where = dir;
+        goto fail;
+    }
     pthread_mutex_lock(&lock);
     n = ++counter;
     pthread_mutex_unlock(&lock);
     snprintf(out, cap, "%s/%d-%s", dir, n, base);
 
-    in = open(image, O_RDONLY);
-    if (in < 0)
-        return -1;
-    outfd = open(out, O_WRONLY | O_CREAT | O_TRUNC, 0700);
+    in = lcsys_real.open(image, O_RDONLY | O_CLOEXEC, 0);
+    if (in < 0) {
+        step = "open(src)";
+        where = image;
+        goto fail;
+    }
+    outfd = lcsys_real.open(out, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0700);
     if (outfd < 0) {
-        close(in);
-        return -1;
+        step = "open(dst)";
+        where = out;
+        goto fail;
     }
     while ((r = read(in, buf, sizeof buf)) > 0) {
         if (write(outfd, buf, (size_t)r) != r) {
-            close(in);
-            close(outfd);
-            unlink(out);
-            return -1;
+            step = "write";
+            where = out;
+            goto fail;
         }
+    }
+    if (r < 0) {
+        step = "read";
+        where = image;
+        goto fail;
     }
     close(in);
     close(outfd);
-    if (r < 0) {
-        unlink(out);
-        return -1;
-    }
     return 0;
+
+fail:
+    err = errno;
+    if (in >= 0)
+        close(in);
+    if (outfd >= 0) {
+        close(outfd);
+        lcsys_real.unlink(out);
+    }
+    lcsys_log("private copy: %s %s failed (errno %d)", step, where, err);
+    errno = err;
+    return -1;
+}
+
+/* getopt state that lives in the GUEST image, not in libSystem: coreutils and friends
+ * bundle gnulib's own getopt, so optind/first_nonopt/last_nonopt/__getopt_initialized
+ * are that image's statics and resetting libc's optind (guest_thread) does nothing -
+ * the "ls works, then ls fails with invalid option -- ''" alternation. dlsym on the
+ * handle finds the image's own copy first, and falls back to libc's when the guest has
+ * none; setting libc's optind to 0 is harmless because guest_thread runs afterwards and
+ * puts it back to 1. GNU/gnulib convention: optind = 0 (NOT 1) forces a full
+ * re-initialisation, including the argv-permutation cursors. */
+static void reset_guest_getopt(void *handle, const char *guest, int announce)
+{
+    int *p_optind = (int *)dlsym(handle, "optind");
+    int *p_opterr = (int *)dlsym(handle, "opterr");
+    int *p_optreset = (int *)dlsym(handle, "optreset");
+    char **p_optarg = (char **)dlsym(handle, "optarg");
+
+    if (p_optind)
+        *p_optind = 0;
+    if (p_opterr)
+        *p_opterr = 1;
+    if (p_optreset)
+        *p_optreset = 1;
+    if (p_optarg)
+        *p_optarg = NULL;
+    if (announce)
+        lcsys_log("%s: guest getopt state optind=%s opterr=%s optreset=%s optarg=%s", guest,
+                  p_optind ? (p_optind == &optind ? "libc" : "own") : "-",
+                  p_opterr ? (p_opterr == &opterr ? "libc" : "own") : "-",
+                  p_optreset ? (p_optreset == &optreset ? "libc" : "own") : "-",
+                  p_optarg ? (p_optarg == &optarg ? "libc" : "own") : "-");
+}
+
+/* First spawn of a given guest path? (only used to log the getopt lookup once) */
+static int first_spawn_of(const char *guest)
+{
+    struct seen { char *path; struct seen *next; };
+    static struct seen *list;
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    struct seen *s;
+    int first = 1;
+
+    pthread_mutex_lock(&lock);
+    for (s = list; s; s = s->next) {
+        if (strcmp(s->path, guest) == 0) {
+            first = 0;
+            break;
+        }
+    }
+    if (first && (s = (struct seen *)calloc(1, sizeof *s)) != NULL) {
+        s->path = strdup(guest);
+        if (s->path) {
+            s->next = list;
+            list = s;
+        } else {
+            free(s);
+        }
+    }
+    pthread_mutex_unlock(&lock);
+    return first;
 }
 
 /* "ls" -> "/var/jb/usr/bin/ls" (first hit that resolves to a readable file; the
@@ -232,7 +328,8 @@ static void *guest_thread(void *arg)
     char *apple[2];
     int rc;
     pthread_setspecific(guest_key, p);
-    /* getopt state is process-global; every "process" starts fresh */
+    /* libc's getopt state (the guest image's own copy, if it has one, was reset in
+     * lcsys_spawn before this thread started) */
     optind = 1;
     optreset = 1;
     opterr = 1;
@@ -288,6 +385,7 @@ int lcsys_spawn(const char *path, char *const argv[], char *const envp[], int fd
         errno = ENOEXEC;
         return -1;
     }
+    reset_guest_getopt(handle, guest, first_spawn_of(guest));
     hdr = find_image(image);
     if (!hdr) {
         lcsys_log("spawn %s: loaded but image not found in _dyld list (%s)", path, image);
@@ -295,7 +393,7 @@ int lcsys_spawn(const char *path, char *const argv[], char *const envp[], int fd
         return -1;
     }
     if (strstr(image, "/procd/"))
-        unlink(image); /* mapped already; keeps tmp clean even if we never dlclose */
+        lcsys_real.unlink(image); /* host path: the unlink override would remap it */
     entry = find_entry(hdr, &entryoff);
     if (!entry) {
         entry = (guest_main_fn)dlsym(handle, "main"); /* fallback: an exported _main */
