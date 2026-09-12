@@ -21,23 +21,31 @@ struct ContentView: View {
     var body: some View {
         Group {
             if mode == .screen, let client = screen {
-                ZStack(alignment: .topTrailing) {
+                // 自前のボタンはコンポジタの絵の上に重なる。上端には ioscbar が
+                // 居るので(実機 2026-09-12 でバーの上に被っていた)、右下の空きに
+                // 小さく置く。ドックは中央寄せなので右下だけは空いている。
+                ZStack(alignment: .bottomTrailing) {
                     ScreenView(client: client)
-                        // 上端だけは譲る。Dynamic Island とステータスバーが乗っていて、
-                        // そこに描いてもコンポジタの一番上の帯(ioscbar)が読めない
                         // 上は Dynamic Island、下はホームインジケータ。どちらも iOS に譲る
                         // (コンポジタに渡す -logical も同じ分だけ小さくしてある)
                         .ignoresSafeArea(edges: .horizontal)
                     // ログは常に取り戻せるようにしておく(iosc が落ちたときに見たいのはログ)
-                    HStack(spacing: 8) {
-                        Button("キーボード") { client.toggleKeyboard() }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                        Button("コンソール") { mode = .console }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
+                    VStack(spacing: 6) {
+                        Button {
+                            client.toggleKeyboard()
+                        } label: {
+                            Image(systemName: "keyboard").frame(width: 32, height: 28)
+                        }
+                        Button {
+                            mode = .console
+                        } label: {
+                            Image(systemName: "terminal").frame(width: 32, height: 28)
+                        }
                     }
-                    .padding(12)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .opacity(0.75)
+                    .padding(6)
                 }
             } else {
                 console

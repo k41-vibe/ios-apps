@@ -463,6 +463,12 @@ final class Runner {
         for k in ["XDG_RUNTIME_DIR", "WAYLAND_DISPLAY"] {
             if let v = environment()[k] { setenv(k, v, 1); log.log("\(label) env \(k)=\(v)") }
         }
+        // 同じものを 2 本起こしても窓が重なるだけで得が無い(実機 2026-09-12:
+        // iosc-client が 2 枚重なって「ぐちゃぐちゃ」に見えた)
+        if aliveLabels().contains(label) {
+            log.log("\(label): すでに動いているので起こさない(\(status()))")
+            return
+        }
         // ソケットの**ファイルがある**ことは iosc が生きている証拠にならない。
         // 前回の残骸でも在るように見えるので、動いているかを直接見る
         if !ioscAlive() {
@@ -474,6 +480,20 @@ final class Runner {
         Thread.sleep(forTimeInterval: settle)
         fflush(nil)
         log.log("\(label) \(String(format: "%.1f", settle)) 秒後: \(status())  [footprint \(footprintMB()) MB]")
+    }
+
+    /// いま生きているものの名前。
+    func aliveLabels() -> Set<String> {
+        startedLock.lock()
+        let pairs = started.map { ($0.key, $0.value) }
+        startedLock.unlock()
+        guard let aliveFn = aliveFn else { return Set(pairs.map { $0.1 }) }
+        var out = Set<String>()
+        for (pid, label) in pairs {
+            var st: Int32 = -1
+            if aliveFn(pid, &st) == 1 { out.insert(label) }
+        }
+        return out
     }
 
     /// iosc 以外で生きているスレッド(= Wayland クライアント)の本数。
@@ -528,8 +548,9 @@ final class Runner {
             ("/var/jb/usr/local/bin/ioscbar", "ioscbar"),
             ("/var/jb/usr/local/bin/ioscdock", "ioscdock"),
             ("/var/jb/usr/local/bin/iosc-client", "iosc-client"),
-            ("/var/jb/usr/local/bin/ioscoverview", "ioscoverview"),
             (Self.footPath, "foot"),
+            // 一覧(ioscoverview)は画面全体を覆う切り替え画面で、出すと壁紙もバーも
+            // 隠れる。単体のボタンから出す方が分かるのでここには入れない
         ]
         for (path, label) in all {
             startClient(path, label: label, settle: 0.8)
