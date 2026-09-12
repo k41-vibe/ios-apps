@@ -324,13 +324,23 @@ def write_stub(dest, flat):
         f.write(STUB_PREFIX + flat)
 
 
-def scan_dylib_names(jb_root):
-    """Regular files under jb/ still named *.dylib (the installer would try to sign them; should be none)."""
+def scan_signer_bait(jb_root):
+    """Names under jb/ that LiveContainer's installer picks up BY NAME (not by content).
+
+    It walks the bundle looking for *.dylib / *.framework / nested *.app and tries to
+    patch or sign each one; our stubs are 30-byte text files, so every hit turns into a
+    "LiveContainer could not sign these files" warning on install (seen on device
+    2026-09-11 with ~150 entries). Stubs are therefore written as <name>.lc, and
+    packages that ship a nested .app (com.max.xios) are kept out of the closure.
+    """
     found = []
-    for dp, _dn, fn in os.walk(jb_root):
+    for dp, dn, fn in os.walk(jb_root):
         for n in fn:
             if n.endswith(".dylib"):
                 found.append(os.path.relpath(os.path.join(dp, n), jb_root).replace("\\", "/"))
+        for d in dn:
+            if d.endswith(".app") or d.endswith(".framework"):
+                found.append(os.path.relpath(os.path.join(dp, d), jb_root).replace("\\", "/") + "/")
     return sorted(found)
 
 
@@ -700,13 +710,19 @@ def main(argv=None):
     log("scan jb/ for Mach-O magic: %d raw Mach-O file(s)%s" % (len(raw), "" if raw else " (OK)"))
     for r in raw:
         log("  RAW  jb/%s" % r)
-    named = scan_dylib_names(jb_root)
-    log("scan jb/ for *.dylib names (stubs are <name>.lc): %d%s" % (len(named), "" if named else " (OK)"))
-    for r in named[:20]:
+    bait = scan_signer_bait(jb_root)
+    log("scan jb/ for names the installer signs (*.dylib, *.app/, *.framework/): %d%s"
+        % (len(bait), "" if bait else " (OK)"))
+    for r in bait[:20]:
         log("  NAME jb/%s" % r)
     if raw and not args.allow_raw_macho:
         log("ERROR: jb/ must contain no Mach-O (every one is relinked into Frameworks/ + stubbed); "
             "pass --allow-raw-macho to override")
+        return 2
+    if bait and not args.allow_raw_macho:
+        log("ERROR: jb/ must contain no *.dylib / *.app / *.framework names - LiveContainer's "
+            "installer picks those up by name and reports them as unsignable; stubs must be <name>.lc "
+            "and packages shipping a nested .app must be dropped from the closure")
         return 2
     return 0
 

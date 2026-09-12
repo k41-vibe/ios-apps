@@ -21,13 +21,15 @@ SOURCES = [
 ]
 SEEDS = ["iosc", "iosc-shell", "foot", "nautilus", "bash", "coreutils",
          "pkg-config", "dbus", "angle", "wayland", "libwayland0", "libwayland-dev",
-         "com.max.xios",  # Xios display app; iosc is useless without it (see inspection notes)
          # extra seeds closing @rpath deps that Depends fields miss (found by stage.py, 2026-09-11):
          "libgtk-3-0",                   # libgtk-3.0.dylib   <- libgnome-autoar-gtk (maxleiter only)
          "libcurl4",                     # libcurl.4.dylib    <- libappstream (maxleiter 8.20 > procursus 8.7)
          "libcairo-script-interpreter2", # libcairo-script-interpreter.2.dylib <- libgtk-4 (both repos)
          "libintl-dev",                  # unversioned libintl.dylib <- librsvg-2 / libpixbufloader-svg; only libintl-dev ships it
          ]
+# NOT seeded: com.max.xios (脱獄機用の表示アプリ Xios.app)。XiOSLite の Swift ホストが同じ役目を果たすので不要。
+#   同梱すると jb/Applications/Xios.app という入れ子の .app ができ、LiveContainer の署名器が
+#   名前で拾って「署名できないファイル」警告を出す。leaf パッケージなので落として安全。
 # NOT seeded: @rpath/libz.1.dylib (freetype/png/xml2) -- no zlib1g in either repo; iOS ships /usr/lib/libz.1.dylib.
 # libexpat1 / libexpat1-dev exist only in the rootful pool; iOS ships /usr/lib/libexpat.1.dylib (fontconfig's alternative is `firmware`).
 GTK4_FALLBACKS = ["nautilus", "gtk4-demo", "gtk4-examples", "gnome-console", "gnome-text-editor"]
