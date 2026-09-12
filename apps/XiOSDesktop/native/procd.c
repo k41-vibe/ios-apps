@@ -49,6 +49,7 @@ struct lc_proc {
     guest_main_fn entry;
     int status;         /* exit code 0..255 */
     int done;
+    int fork_child;     /* fork の子(exec で化けるためだけに居る短命なスレッド) */
     struct lc_proc *next;
 };
 
@@ -73,6 +74,20 @@ int lcsys_is_guest_thread(void)
 {
     pthread_once(&key_once, make_key);
     return pthread_getspecific(guest_key) != NULL;
+}
+
+/* fork の子(まだ exec していない短命なスレッド)か。
+ * 本物の fork なら親子で fd の表が分かれるが、ここでは 1 つしか無い。
+ * 子が「親の分はもう要らない」と閉じると、親の分まで消えてしまう
+ * (実機 2026-09-12: dbus-run-session が
+ *  `error reading address from bus daemon: Bad file descriptor` で転んだ)。
+ * 子は exec して消えるだけなので、子からの close は見送る。 */
+int lcsys_is_fork_child(void)
+{
+    struct lc_proc *p;
+    pthread_once(&key_once, make_key);
+    p = (struct lc_proc *)pthread_getspecific(guest_key);
+    return p && p->fork_child;
 }
 
 struct fork_arg {
@@ -114,6 +129,7 @@ int lcsys_fork_child(void (*fn)(void *), void *arg)
         free(f);
         return -1;
     }
+    p->fork_child = 1;
     p->guest_path = strdup(parent && parent->guest_path ? parent->guest_path : "(fork)");
     p->image_path = strdup(p->guest_path ? p->guest_path : "(fork)");
     f->fn = fn;

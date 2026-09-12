@@ -19,6 +19,7 @@
 #include "lcsys.h"
 
 #include <crt_externs.h>   /* environ は iOS では _NSGetEnviron() 経由 */
+#include <pwd.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -262,6 +263,13 @@ static int lc_close_impl(int fd)
         lcsys_log("close(%d): ゲストなので見送る", fd);
         return 0;
     }
+    /* fork の子からの close は全部見送る。本物の fork なら親子で fd の表が
+     * 分かれるが、ここでは 1 つしか無いので、子が閉じると親の分まで消える。
+     * 子は exec して消えるだけなので、閉じ損ねても行儀の悪さで済む */
+    if (fd >= 0 && lcsys_is_fork_child()) {
+        lcsys_log("close(%d): fork の子なので見送る(fd の表は親と共有)", fd);
+        return 0;
+    }
     if (!real)
         real = (int (*)(int))find_real("close");
     return real ? real(fd) : -1;
@@ -314,6 +322,106 @@ static int marker_for(const char *path, char *marker, size_t cap, char *target, 
     while (n > 0 && (target[n - 1] == '\n' || target[n - 1] == '\r'))
         target[--n] = '\0';
     return n > 0;
+}
+
+/* ------------------------------------------------------------ 利用者の台帳
+ *
+ * アプリのサンドボックスからは利用者の台帳が引けない。dbus はここで転ぶ
+ * (実機 2026-09-12:
+ *  `Could not get password database information for UID of current process:
+ *   User "???" unknown` -> `Failed to start message bus`)。
+ * 台帳そのものは iOS にも在るが、サンドボックスの中からは読めない。
+ * 中身は「mobile / uid 501」で決まっているので、その 1 件だけを自前で返す。 */
+
+static struct passwd *lcsys_passwd(void)
+{
+    static struct passwd pw;
+    static char name[] = "mobile";
+    static char pass[] = "*";
+    static char gecos[] = "Mobile User";
+    static char shell[] = "/var/jb/usr/bin/bash";
+    static char home[LCSYS_PATH_MAX];
+    static int ready;
+
+    if (!ready) {
+        ENSURE();
+        snprintf(home, sizeof home, "%s", lcsys_cfg.home[0] ? lcsys_cfg.home : "/var/mobile");
+        pw.pw_name = name;
+        pw.pw_passwd = pass;
+        pw.pw_uid = getuid();
+        pw.pw_gid = getgid();
+        pw.pw_gecos = gecos;
+        pw.pw_dir = home;
+        pw.pw_shell = shell;
+        ready = 1;
+    }
+    return &pw;
+}
+
+static int copy_passwd(struct passwd *out, char *buf, size_t cap, struct passwd **res)
+{
+    struct passwd *src = lcsys_passwd();
+    size_t need;
+    char *p = buf;
+    const char *fields[5];
+    char **dst[5];
+    int i;
+
+    fields[0] = src->pw_name;   dst[0] = &out->pw_name;
+    fields[1] = src->pw_passwd; dst[1] = &out->pw_passwd;
+    fields[2] = src->pw_gecos;  dst[2] = &out->pw_gecos;
+    fields[3] = src->pw_dir;    dst[3] = &out->pw_dir;
+    fields[4] = src->pw_shell;  dst[4] = &out->pw_shell;
+
+    need = 0;
+    for (i = 0; i < 5; i++)
+        need += strlen(fields[i]) + 1;
+    if (need > cap) {
+        if (res)
+            *res = NULL;
+        return ERANGE;
+    }
+    memset(out, 0, sizeof *out);
+    out->pw_uid = src->pw_uid;
+    out->pw_gid = src->pw_gid;
+    for (i = 0; i < 5; i++) {
+        size_t n = strlen(fields[i]) + 1;
+        memcpy(p, fields[i], n);
+        *dst[i] = p;
+        p += n;
+    }
+    if (res)
+        *res = out;
+    return 0;
+}
+
+struct passwd *getpwuid(uid_t uid)
+{
+    (void)uid;
+    return lcsys_passwd();
+}
+
+struct passwd *getpwnam(const char *name)
+{
+    (void)name;
+    return lcsys_passwd();
+}
+
+int getpwuid_r(uid_t uid, struct passwd *pwd, char *buf, size_t cap, struct passwd **res)
+{
+    (void)uid;
+    return copy_passwd(pwd, buf, cap, res);
+}
+
+int getpwnam_r(const char *name, struct passwd *pwd, char *buf, size_t cap, struct passwd **res)
+{
+    (void)name;
+    return copy_passwd(pwd, buf, cap, res);
+}
+
+char *getlogin(void)
+{
+    return lcsys_passwd()->pw_name;
 }
 
 /* statfs/statvfs: ioscbg のデスクトップ部品(Storage)が空き容量をこれで読む。
