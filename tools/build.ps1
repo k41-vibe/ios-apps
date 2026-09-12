@@ -88,7 +88,10 @@ Copy-Item $ipa.FullName "$Dest\$Name.ipa" -Force
 Write-Host "完成: $Dest\$Name.ipa  ($([math]::Round($ipa.Length/1KB)) KB)"
 Write-Host "iPhone: ファイルApp → SharedFolder/ios-apps/$Name.ipa → 共有 → LiveContainer"
 if ($tag) {
-    $url = gh release view $tag --json url --jq .url 2>$null
+    # Release はアプリごとに 1 つ(タグ = 小文字のアプリ名)。資産は版ごとに <App>-vX.Y.Z.ipa
+    $rel = $Name.ToLower()
+    $url = gh release view $rel --json url --jq .url 2>$null
     Write-Host "Release: $url"
+    Write-Host "資産: $Name-v$Release.ipa   (ソースは git タグ $tag)"
     Write-Host "LiveContainer の一覧に v$Release と出れば新版が入っています"
 }
