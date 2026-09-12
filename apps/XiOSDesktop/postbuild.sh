@@ -105,7 +105,7 @@ PY
 # 未定義シンボルが実機で解決できるかを二段名前空間の library ordinal で検査する
 # (G0 で libpcre2 の _SLJIT_UPDATE_WX_FLAGS 欠落を見つけた検査。今までは手で回していた)
 echo "== auditing undefined symbols against what the bundle + iOS provide"
-python3 "$HERE/../../tools/xios/audit_symbols.py" "$FW" || {
+python3 "$HERE/../../tools/xios/audit_symbols.py" "$FW" --manifest "$APP_DIR/jb/manifest.json" || {
   echo "::error::解決できない未定義シンボルがある(上の一覧)。lcsys.c で定義するか、提供パッケージを種に足す"
   exit 1
 }

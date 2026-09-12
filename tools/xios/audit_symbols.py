@@ -13,7 +13,12 @@ LiveContainer の JIT-less 運用では dlopen(RTLD_NOW) で束縛するため�
 これを使って「@rpath/… から来るはずなのに Frameworks/ に無い」「フラット検索なのに
 どこにも無い」を厳密に洗い出す。/usr/lib/… や *.framework は iOS 本体が持つので除外。
 
-使い方: python audit_symbols.py <stage の Frameworks ディレクトリ>
+使い方: python audit_symbols.py <stage の Frameworks ディレクトリ> [--manifest manifest.json] [--ignore-prefix /var/jb/...]
+
+除外(--manifest があるときだけ効く。既定で /var/jb/usr/lib/bash/):
+  bash の読み込み式ビルトイン(enable -f)は bash 本体の内部シンボル
+  (_reset_internal_getopt など)をフラット検索で借りる作り。実行ファイルは何も
+  公開しないので「どこにも無い」と出るが、bash が読み込む時点では同じ像の中に在る。
 """
 import os
 import struct
@@ -86,8 +91,26 @@ def is_system(dep):
 
 
 def main():
-    fw = sys.argv[1] if len(sys.argv) > 1 else "stage/Frameworks"
+    import argparse
+    import json
+    ap = argparse.ArgumentParser()
+    ap.add_argument("frameworks", nargs="?", default="stage/Frameworks")
+    ap.add_argument("--manifest", help="stage.py の manifest.json(flat 名 -> 元のパス)")
+    ap.add_argument("--ignore-prefix", action="append", default=None,
+                    help="元のパスがこれで始まるものは検査しない(既定 /var/jb/usr/lib/bash/)")
+    args = ap.parse_args()
+    fw = args.frameworks
+    ignore = args.ignore_prefix if args.ignore_prefix is not None else ["/var/jb/usr/lib/bash/"]
+    orig_of = {}
+    if args.manifest and os.path.exists(args.manifest):
+        with open(args.manifest, encoding="utf-8") as fh:
+            for m in json.load(fh):
+                orig_of[m["flat"]] = m["orig_path"]
     files = sorted(f for f in os.listdir(fw) if not f.startswith("."))
+    skipped = [f for f in files if any(orig_of.get(f, "").startswith(pfx) for pfx in ignore)]
+    if skipped:
+        print(f"除外 {len(skipped)} 本({', '.join(ignore)} 配下): {' '.join(skipped[:8])}{' …' if len(skipped) > 8 else ''}")
+    files = [f for f in files if f not in skipped]
     parsed, by_install, all_exports = {}, {}, set()
     for f in files:
         r = parse(os.path.join(fw, f))
