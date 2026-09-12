@@ -118,6 +118,44 @@ Copy-Item $ipa.FullName "$root\dist\$Name.ipa" -Force
 Copy-Item $ipa.FullName "$Dest\$Name.ipa" -Force
 Write-Host "完成: $Dest\$Name.ipa  ($([math]::Round($ipa.Length/1KB)) KB)"
 Write-Host "iPhone: ファイルApp → SharedFolder/ios-apps/$Name.ipa → 共有 → LiveContainer"
+
+# ---- 取り込み経路 ----------------------------------------------------------
+# Syncthing が止まっていると SharedFolder は iPhone に届かない(2026-09-12 に発覚)。
+# 代わりに dist/ を LAN と Tailscale に配る小さなサーバーを立てておく。
+# LiveContainer は URL から取り込めるので、毎回同じ URL を貼るだけで済む。
+$port = 8788
+$listening = $false
+try {
+    $listening = [bool](Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+} catch { }
+if (-not $listening) {
+    $py = (Get-Command pythonw.exe -ErrorAction SilentlyContinue)
+    if (-not $py) { $py = (Get-Command python.exe -ErrorAction SilentlyContinue) }
+    if ($py) {
+        Start-Process -FilePath $py.Source -ArgumentList "`"$root	ools\serve-ipa.py`"", $port -WindowStyle Hidden
+        Start-Sleep -Seconds 2
+        Write-Host "ipa 配布サーバーを起こしました (ポート $port)"
+    }
+}
+$urls = @()
+try {
+    $s = New-Object Net.Sockets.UdpClient
+    $s.Connect("8.8.8.8", 80)
+    $urls += "LAN       http://$($s.Client.LocalEndPoint.Address):$port/$Name.ipa"
+    $s.Close()
+} catch { }
+$tsExe = "C:\Program Files\Tailscale	ailscale.exe"
+if (Test-Path $tsExe) {
+    $ts = (& $tsExe ip -4 2>$null | Select-Object -First 1)
+    if ($ts) { $urls += "Tailscale http://$($ts.Trim()):$port/$Name.ipa" }
+}
+$sync = Get-Process -Name syncthing -ErrorAction SilentlyContinue
+if (-not $sync) {
+    Write-Host "注意: Syncthing が動いていないので SharedFolder は iPhone に届きません"
+}
+Write-Host "iPhone: LiveContainer の + に URL を貼る:"
+foreach ($u in $urls) { Write-Host "  $u" }
+
 if ($tag) {
     # kioku と同じ 1 版 = 1 リリース(タグ <app>-vX.Y.Z、資産は <App>.ipa 固定)
     $url = gh release view $tag --json url --jq .url 2>$null
