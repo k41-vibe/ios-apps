@@ -132,7 +132,8 @@ if (-not $listening) {
     $py = (Get-Command pythonw.exe -ErrorAction SilentlyContinue)
     if (-not $py) { $py = (Get-Command python.exe -ErrorAction SilentlyContinue) }
     if ($py) {
-        Start-Process -FilePath $py.Source -ArgumentList "`"$root	ools\serve-ipa.py`"", $port -WindowStyle Hidden
+        $script = Join-Path $root 'tools\serve-ipa.py'
+        Start-Process -FilePath $py.Source -ArgumentList "`"$script`"", $port -WindowStyle Hidden
         Start-Sleep -Seconds 2
         Write-Host "ipa 配布サーバーを起こしました (ポート $port)"
     }
@@ -144,7 +145,7 @@ try {
     $urls += "LAN       http://$($s.Client.LocalEndPoint.Address):$port/$Name.ipa"
     $s.Close()
 } catch { }
-$tsExe = "C:\Program Files\Tailscale	ailscale.exe"
+$tsExe = 'C:\Program Files\Tailscale\tailscale.exe'
 if (Test-Path $tsExe) {
     $ts = (& $tsExe ip -4 2>$null | Select-Object -First 1)
     if ($ts) { $urls += "Tailscale http://$($ts.Trim()):$port/$Name.ipa" }
