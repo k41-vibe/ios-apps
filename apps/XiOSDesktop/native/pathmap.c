@@ -170,6 +170,15 @@ char *lcsys_map_path(const char *in, char *out, size_t cap)
 
     if (is_host_path(p))
         lc_strlcpy(out, in, cap);
+    /* /var/jb/tmp は書ける場所でなければならない。アプリの中(jb)は読み取り専用なので、
+     * ここを jb に落とすと iosc-shell が共有のセッションバスを作れない。
+     * xiOS のソース(apps/iosc-shell/shell-draw.h sd_launch)は
+     * <jbroot>/tmp/iosc-shell-bus に 1 本だけバスを立て、**立てられたときは
+     * dbus-run-session を使わない**。立てられないと 1 起動ごとに使い捨ての
+     * バスを作る道へ落ちる。実機 2026-09-12 で dbus が二重に起きていたのはこれ。
+     * /var/jb より先に見ること。 */
+    else if (prefix_match(p, "/var/jb/tmp", &rest) || prefix_match(p, "/var/jb/var/tmp", &rest))
+        join2(out, cap, lcsys_cfg.tmp, rest);
     else if (prefix_match(p, "/var/jb", &rest))
         join2(out, cap, lcsys_cfg.jb, rest);
     else if (prefix_match(p, "/var/mobile", &rest) || prefix_match(p, "/var/root", &rest))

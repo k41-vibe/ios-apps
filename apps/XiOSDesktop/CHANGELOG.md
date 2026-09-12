@@ -8,6 +8,32 @@
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-09-12
+
+### Fixed
+- **dbus が二重に起きていた本当の理由**。xiOS のソース(`apps/iosc-shell/shell-draw.h`
+  の `sd_launch`)を読んだところ、設計はこうだった:
+
+  ```c
+  int have_bus = sd_shared_session_bus(root, busdir, ...);   /* <jbroot>/tmp/iosc-shell-bus */
+  if (!have_bus)
+      execl(dbus_run, "dbus-run-session", "--", sh_bin, "-lc", cmd, NULL);
+  execl(sh_bin, "sh", "-lc", cmd, NULL);
+  ```
+
+  **共有バスが 1 本立てば `dbus-run-session` は使わない**。立てられなかったときだけ、
+  1 起動ごとに使い捨てのバスを作る道へ落ちる。実機で 2 本走っていたのは、
+  共有バスを作れずに落ちた先だった。作れなかったのは `/var/jb/tmp` を
+  アプリの中(読み取り専用)に写していたからで、こちらの経路変換の誤り。
+  `/var/jb/tmp` と `/var/jb/var/tmp` は書ける場所へ写すようにした
+- `sd_launch` は起動するアプリの `XDG_RUNTIME_DIR` を共有バスの置き場へ差し替える。
+  Wayland のクライアントは `XDG_RUNTIME_DIR/WAYLAND_DISPLAY` を見るので、
+  そのままだとコンポジタを見失う。置き場を先に作って、そこからも同じソケットが
+  見えるように印を張っておく
+- `DBUS_SESSION_BUS_ADDRESS` を既定の環境から外した。バスの場所は向こうが決める設計で、
+  こちらが先に別の場所を指すと二重に立てる道へ迷い込む。自分で起こすとき
+  (「エディタ」ボタン)だけ、その場で教える
+
 ## [0.2.5] - 2026-09-12
 
 ### Fixed
