@@ -9,8 +9,8 @@
  * fallback (RTLD_NEXT searches the images this dylib links against, i.e.
  * libSystem).
  *
- * execv/execve/execvp and posix_spawn/posix_spawnp: G1 stubs - log argv,
- * fail with ENOSYS (so the console shows what bash/ls try to run).
+ * execv/execve/execvp: still stubs (they must not return, and a thread cannot
+ * replace itself in place). posix_spawn/posix_spawnp go to procd for real.
  * fork/vfork: log, fail with EAGAIN
  * (LCSYS_FORK_ERRNO=<n> overrides; bash retries EAGAIN with 1,2,4,8,16 s
  * sleeps, ENOSYS makes it give up at once).
@@ -521,20 +521,53 @@ int execvp(const char *file, char *const argv[])
     return -1;
 }
 
+/* posix_spawn は fork と違って「1 回呼んで 1 回返る」ので、スレッドで代われる。
+ * fork が絶対に真似できないのは 1 回の呼び出しから 2 回返るからで、posix_spawn には
+ * その問題が無い。だからここは本物にできる。
+ *
+ * file_actions(子の fd を差し替える指示)と attrp は今は見ていない。procd は
+ * 出力をプロセス共通のパイプに流すので、多くの用途ではそれで足りる。pty や
+ * パイプを要求する相手が出てきたら、そのときに file_actions を解釈する。 */
+static int spawn_via_procd(const char *what, pid_t *pid, const char *path,
+                           char *const argv[], char *const envp[])
+{
+    int p;
+    log_argv(what, path, argv);
+    p = lcsys_spawn(path, argv, envp, -1, -1);
+    if (p < 0) {
+        lcsys_log("%s: %s を起こせなかった", what, path ? path : "(null)");
+        return ENOENT;
+    }
+    if (pid)
+        *pid = (pid_t)p;
+    lcsys_log("%s: %s -> pid %d(スレッドとして起動)", what, path, p);
+    return 0;
+}
+
 int posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *file_actions,
                 const posix_spawnattr_t *attrp, char *const argv[], char *const envp[])
 {
-    (void)pid; (void)file_actions; (void)attrp; (void)envp;
-    log_argv("posix_spawn", path, argv);
-    return ENOSYS; /* posix_spawn returns the error number, errno is not set */
+    (void)file_actions; (void)attrp;
+    return spawn_via_procd("posix_spawn", pid, path, argv, envp);
 }
 
 int posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_actions_t *file_actions,
                  const posix_spawnattr_t *attrp, char *const argv[], char *const envp[])
 {
-    (void)pid; (void)file_actions; (void)attrp; (void)envp;
-    log_argv("posix_spawnp", file, argv);
-    return ENOSYS;
+    (void)file_actions; (void)attrp;
+    /* p つきは PATH から探す。procd の解決は絶対パス前提なので、ここで足す */
+    if (file && !strchr(file, '/')) {
+        static const char *dirs[] = {"/var/jb/usr/local/bin/", "/var/jb/usr/bin/", "/var/jb/bin/"};
+        char full[LCSYS_PATH_MAX];
+        size_t i;
+        for (i = 0; i < sizeof dirs / sizeof dirs[0]; i++) {
+            if (snprintf(full, sizeof full, "%s%s", dirs[i], file) >= (int)sizeof full)
+                continue;
+            if (access(full, X_OK) == 0 || access(full, F_OK) == 0)
+                return spawn_via_procd("posix_spawnp", pid, full, argv, envp);
+        }
+    }
+    return spawn_via_procd("posix_spawnp", pid, file, argv, envp);
 }
 
 pid_t fork(void)

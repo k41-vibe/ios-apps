@@ -101,6 +101,11 @@ struct ContentView: View {
                 Button("ドック") { run { $0.startDock() } }.buttonStyle(.bordered).disabled(busy)
                 Button("一覧") { run { $0.startOverview() } }.buttonStyle(.bordered).disabled(busy)
                 Button("全部") { startEverything() }.buttonStyle(.borderedProminent).disabled(busy || opening)
+            }
+            HStack {
+                Button("歯車") { run { $0.startGears() } }.buttonStyle(.bordered).disabled(busy)
+                Button("dbus") { run { $0.startDbus() } }.buttonStyle(.bordered).disabled(busy)
+                Button("エディタ") { run { $0.startEditor() } }.buttonStyle(.borderedProminent).disabled(busy)
                 Toggle("詳細ログ", isOn: Binding(
                     get: { Runner.traceEnabled },
                     set: { Runner.traceEnabled = $0; setenv("LCSYS_TRACE", $0 ? "1" : "0", 1) }
