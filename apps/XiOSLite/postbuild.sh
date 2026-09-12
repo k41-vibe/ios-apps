@@ -55,26 +55,37 @@ cp -R "$STAGE_DIR/jb" "$APP_DIR/jb"
 cp "$STAGE_DIR/manifest.json" "$APP_DIR/jb/manifest.json"
 [ -f "$STAGE_DIR/symlinks.json" ] && cp "$STAGE_DIR/symlinks.json" "$APP_DIR/jb/symlinks.json"
 
-# Invariant (stage.py): jb/ holds data + @LC stubs only. A raw Mach-O here would be signed by
-# LiveContainer as a stray dylib instead of being loaded via Frameworks/<flat>; fail the build.
-echo "== scanning $APP_DIR/jb for raw Mach-O files"
-python3 - "$APP_DIR/jb" <<'PY' || { echo "::error::raw Mach-O file(s) under jb/ (see list above); stage.py must relink + stub every Mach-O"; exit 1; }
+# Invariants (stage.py): jb/ holds data + @LC stubs only.
+#   (a) no Mach-O content - LiveContainer would sign it as a stray dylib instead of it being
+#       loaded through Frameworks/<flat>
+#   (b) no name the installer picks up by NAME - *.dylib, nested *.app/, *.framework/ - those are
+#       what produced the "could not sign these files" list on device (2026-09-11)
+# stage.py already gates both; re-checking here catches a stale artifact or a hand-edited tree.
+echo "== scanning $APP_DIR/jb (raw Mach-O content, and names the installer signs)"
+python3 - "$APP_DIR/jb" <<'PY' || { echo "::error::jb/ invariant broken (see list above); stage.py must relink + stub every Mach-O and name stubs <name>.lc"; exit 1; }
 import os, sys
 root = sys.argv[1]
 magics = {bytes.fromhex(h) for h in ("cffaedfe", "feedfacf", "cefaedfe", "feedface", "cafebabe", "bebafeca")}
-raw = []
-for dp, _dn, fn in os.walk(root):
+raw, bait = [], []
+for dp, dn, fn in os.walk(root):
+    for d in dn:
+        if d.endswith(".app") or d.endswith(".framework"):
+            bait.append(os.path.relpath(os.path.join(dp, d), root) + "/")
     for n in fn:
         p = os.path.join(dp, n)
+        if n.endswith(".dylib"):
+            bait.append(os.path.relpath(p, root))
         if os.path.islink(p):
             continue
         with open(p, "rb") as f:
             if f.read(4) in magics:
                 raw.append(os.path.relpath(p, root))
 for r in sorted(raw):
-    print("  RAW jb/" + r)
-print("jb/ raw Mach-O files: %d" % len(raw))
-sys.exit(1 if raw else 0)
+    print("  RAW  jb/" + r)
+for r in sorted(bait)[:20]:
+    print("  NAME jb/" + r)
+print("jb/ raw Mach-O: %d, installer-visible names: %d" % (len(raw), len(bait)))
+sys.exit(1 if (raw or bait) else 0)
 PY
 
 echo "Frameworks/: $(ls "$FW" | wc -l) entries"

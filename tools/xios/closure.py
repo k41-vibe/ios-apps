@@ -11,7 +11,8 @@ and the rootful pool (dists/iphoneos-arm64/1800) ships payloads at / with
 /usr/lib install names and LC_RPATH /usr/lib, which cannot be relinked in place
 (stage run of 2026-09-11: 41 rootful packages, 265 rpath_unfit warnings).
 """
-import re, sys, os
+import os
+import re
 from collections import OrderedDict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
