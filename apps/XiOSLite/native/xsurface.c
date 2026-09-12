@@ -35,6 +35,7 @@
  */
 #include "lcsys.h"
 
+#include <dlfcn.h>   /* task_for_pid の本体を引くため */
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -547,11 +548,51 @@ static struct xs_conn *xs_try_connect(const char *path, uint32_t caps)
     return c;
 }
 
+/* iOS では task_for_pid() が **自分自身の pid に対しても** 通らない(実機 2026-09-12:
+ * "xios: task_for_pid(1199) failed: 0x5 ((os/kern) failure)")。macOS とは違う点で、
+ * ここが画面が出ない直接の原因だった。iosc は相手(= 我々)の task port を取ってから
+ * IOSurface のポートを送るので、これが失敗すると絵が一枚も渡ってこない。
+ *
+ * iosc の libSystem 依存は relink で @rpath/libLCsys.dylib に差し替えてあるので、
+ * この定義が iosc の task_for_pid 呼び出しに割り当たる。自分の pid なら
+ * mach_task_self() を返すだけでよい(自分の task port はいつでも持っている)。
+ * 他人の pid は本物に渡す(そちらは従来どおり失敗する)。 */
+kern_return_t task_for_pid(mach_port_name_t target, int pid, mach_port_name_t *t)
+{
+    static kern_return_t (*real)(mach_port_name_t, int, mach_port_name_t *);
+    static int resolved;
+
+    if (pid == getpid()) {
+        if (t)
+            *t = mach_task_self();
+        lcsys_log("xsurface: task_for_pid(self=%d) -> mach_task_self() (iOS では本物は失敗する)", pid);
+        return KERN_SUCCESS;
+    }
+    if (!resolved) {
+        resolved = 1;
+        real = (kern_return_t (*)(mach_port_name_t, int, mach_port_name_t *))dlsym(RTLD_NEXT, "task_for_pid");
+    }
+    if (real)
+        return real(target, pid, t);
+    return KERN_FAILURE;
+}
+
 xs_conn *xs_connect(const char *ddx_sock_path)
 {
-    struct xs_conn *c = xs_try_connect(ddx_sock_path, XS_HELLO_CAP_STREAM_V2);
-    int saved;
+    struct xs_conn *c = NULL;
+    int saved, attempt;
 
+    /* iosc はソケットを bind してから listen するまでに GPU の初期化を挟むので、
+     * ファイルが見えていても少しの間 ECONNREFUSED が返る(実機 2026-09-12)。
+     * 繋がるまで 200ms 間隔で最大 10 秒待つ。 */
+    for (attempt = 0; attempt < 50; attempt++) {
+        c = xs_try_connect(ddx_sock_path, XS_HELLO_CAP_STREAM_V2);
+        if (c || errno != ECONNREFUSED)
+            break;
+        if (attempt == 0)
+            lcsys_log("xsurface: まだ listen していない(ECONNREFUSED)。繋がるまで待つ");
+        usleep(200 * 1000);
+    }
     if (c)
         return c;
     saved = errno;
