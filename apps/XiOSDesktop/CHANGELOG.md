@@ -8,6 +8,23 @@
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-09-12
+
+### Fixed
+- **ドックからアプリが起動するようになった**。v0.2.4 の実機で
+  `ioscoverview 0.9.7: 4 app(s)` / `layer_surface created ns="overview"` まで到達し、
+  **xiOS 側を 1 行も改変せずにランチャーが通った**。残っていたのは dbus で転ぶ 2 点:
+  - **利用者の台帳が引けない**。`getpwuid` がサンドボックスから通らず、dbus が
+    `Could not get password database information for UID of current process: User "???" unknown`
+    → `Failed to start message bus` で落ちていた。中身は「mobile / uid 501」で決まっているので、
+    `getpwuid` / `getpwnam` / それぞれの `_r` / `getlogin` を自前で返す
+  - **fork の子が親の fd を閉じていた**。本物の fork なら親子で fd の表が分かれるが、
+    ここでは 1 つしか無い。`dbus-run-session` は pipe を作って fork し、子が
+    「親の分はもう要らない」と閉じるので、親の読み口まで消えて
+    `error reading address from bus daemon: Bad file descriptor` になっていた。
+    fork の子からの `close` は全部見送る(子は exec して消えるだけなので、
+    閉じ損ねても行儀の悪さで済む)
+
 ## [0.2.4] - 2026-09-12
 
 ### Added

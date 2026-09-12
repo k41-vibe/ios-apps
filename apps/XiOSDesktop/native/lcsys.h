@@ -56,6 +56,10 @@ int lcsys_alive(int pid, int *status);
  * fork の再現(native/lcfork.c)と、標準入出力を守る判断に使う。 */
 int lcsys_is_guest_thread(void);
 
+/* fork の子(まだ exec していない短命なスレッド)か。fd の表が 1 つしか無いので、
+ * 子からの close は見送る必要がある。 */
+int lcsys_is_fork_child(void);
+
 /* fork() の子として、procd の台帳に載ったスレッドを 1 本立てる。
  * fn は複製したスタックへ飛ぶので普通は戻ってこない。返り値は擬似 pid。 */
 int lcsys_fork_child(void (*fn)(void *), void *arg);
