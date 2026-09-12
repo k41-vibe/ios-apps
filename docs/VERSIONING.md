@@ -41,13 +41,15 @@ LiveContainer に入っている版が `0.0.…` なら開発ビルド、`0.1.0`
 節は `Added / Changed / Fixed / Removed`。実機で確認した事実(G0/G1 の計測値など)は
 `tools/xios/*.md` に書き、CHANGELOG には「何が変わったか」だけを書く。
 
-## 移行前の Release(2026-09-11〜12 に旧方式で出したもの)
+## 移行前の Release(2026-09-11〜12)
 
-| タグ | 中身 | 扱い |
-|---|---|---|
-| `lcprobe-v1` | LCProbe(dylib 800 本) | 旧方式。LiveContainer の署名工程が耐えないため実機では未使用 |
-| `lcprobes-v1` | LCProbeS(dylib 100 本) | 旧方式。G0 の計測に使った版 |
-| `xioslite-g1` | XiOSLite 9/11 版(上書き済み) | アーカイブ |
-| `xioslite` | 資産を積み上げる方式(1 日だけ使用) | 新方式へ移行後に削除 |
+版番号を入れる前のビルドは、アプリごとに 1 つの「旧ビルド」リリースへ統合済み。
+資産名で中身が分かるようにしてある(コミット番号、または特徴)。
 
-以後は本書の方式のみ。
+| タグ | 中身 |
+|---|---|
+| `xioslite` | `XiOSLite-2957464.ipa`(9/12・実機未テスト)、`XiOSLite-e6dbd2f.ipa`(9/11・G1 初回テストに使用) |
+| `lcprobe` | `LCProbeS-100dylibs.ipa`(**G0 の計測を取った版**)、`LCProbe-800dylibs.ipa`(署名工程が耐えず実機で開けず) |
+
+統合前の `xioslite-g1` / `xioslite-g1.2` / `lcprobe-v1` / `lcprobes-v1` は削除済み。
+以後は本書の方式(`<app>-vX.Y.Z`、1 リリース = 1 版)のみ。
