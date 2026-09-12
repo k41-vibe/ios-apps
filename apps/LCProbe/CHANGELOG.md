@@ -9,8 +9,9 @@ LiveContainer(JIT-less)の実機能力を測る計測アプリ。結果は `tool
 - 版番号・ビルド番号・コミットを画面に表示(`AppVersion`)
 
 ### Changed
-- **LCProbeS を統合して廃止**。dylib の本数は `postbuild.sh` の `LCPROBE_DYLIBS`(既定 100)で変える。
+- dylib の本数を `postbuild.sh` の `LCPROBE_DYLIBS`(既定 100)で変えられるようにした。
   段階(tier)も実際に入っている本数から自動で決める
+  (一度 LCProbeS を統合して廃止したが、瑠人さんの指示で LCProbeS は別アプリのまま戻した)
 
 ### Fixed
 - 「runtime dlopen OK」を「JIT が有効」と読める文言にしていた。実際は署名済み dylib のコピーが
