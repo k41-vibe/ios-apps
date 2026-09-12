@@ -27,6 +27,13 @@ struct ContentView: View {
                 if busy { ProgressView().controlSize(.small) }
                 Text("footprint \(footprintMB()) MB").font(.footnote)
             }
+            HStack {
+                // iosc は wl_display_run で戻ってこない。起動して 2 秒後の様子をログに出すだけ
+                Button("iosc を起動") { startIosc() }.buttonStyle(.bordered).disabled(busy)
+                // iosc が走っている間も押せるように busy では止めない(中身は一瞬で終わる)
+                Button("状態") { showStatus() }.buttonStyle(.bordered)
+                Spacer()
+            }
             ScrollViewReader { proxy in
                 ScrollView {
                     Text(log.text)
@@ -76,6 +83,16 @@ struct ContentView: View {
 
     private func runTests() {
         run { $0.runG1Tests() }
+    }
+
+    private func startIosc() {
+        run { $0.startIosc() }
+    }
+
+    // busy を触らない別経路: G1 テストや iosc の起動中でも状態だけは見たい
+    private func showStatus() {
+        let r = ensureRunner()
+        Thread { r.logStatus() }.start()
     }
 
     private func runCommand() {

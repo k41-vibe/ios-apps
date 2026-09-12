@@ -5,6 +5,14 @@
 
 ## [Unreleased]
 
+### Added
+- 戻ってこないゲストを起こす経路: `Runner.start()`(spawn したら wait しない)と
+  `Runner.status()` / `lcsys_alive()`(join も回収もせずに生死と終了コードを見る)
+- 「iosc を起動」ボタン。Wayland コンポジタ `iosc` を、作業ディレクトリとソケットのパスを
+  全部 `$TMPDIR` 配下に明示して起こし、2 秒後の生死とできたファイルをログに出す
+  (画も入力もまだ無い。どこまで進むかを見るための段)
+- 「状態」ボタン。起こしたゲストの生死・footprint・`xdg-runtime` と `xios` の中身を出す
+
 ## [0.1.0] - 2026-09-12
 
 ### Added
