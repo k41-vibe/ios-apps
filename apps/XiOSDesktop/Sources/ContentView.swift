@@ -25,7 +25,9 @@ struct ContentView: View {
                     ScreenView(client: client)
                         // 上端だけは譲る。Dynamic Island とステータスバーが乗っていて、
                         // そこに描いてもコンポジタの一番上の帯(ioscbar)が読めない
-                        .ignoresSafeArea(edges: [.bottom, .horizontal])
+                        // 上は Dynamic Island、下はホームインジケータ。どちらも iOS に譲る
+                        // (コンポジタに渡す -logical も同じ分だけ小さくしてある)
+                        .ignoresSafeArea(edges: .horizontal)
                     // ログは常に取り戻せるようにしておく(iosc が落ちたときに見たいのはログ)
                     HStack(spacing: 8) {
                         Button("キーボード") { client.toggleKeyboard() }
@@ -90,6 +92,7 @@ struct ContentView: View {
                 Button("窓") { run { $0.startTestClient() } }.buttonStyle(.bordered).disabled(busy)
                 Button("ドック") { run { $0.startDock() } }.buttonStyle(.bordered).disabled(busy)
                 Button("一覧") { run { $0.startOverview() } }.buttonStyle(.bordered).disabled(busy)
+                Button("全部") { startEverything() }.buttonStyle(.borderedProminent).disabled(busy || opening)
                 Toggle("詳細ログ", isOn: Binding(
                     get: { Runner.traceEnabled },
                     set: { Runner.traceEnabled = $0; setenv("LCSYS_TRACE", $0 ? "1" : "0", 1) }
@@ -141,6 +144,19 @@ struct ContentView: View {
 
     private func startIosc() {
         run { $0.startIosc() }
+    }
+
+    // 試験用: 繋がる相手を全部起こしてから画面へ行く。1 回で全部見たいとき用。
+    private func startEverything() {
+        let r = ensureRunner()
+        busy = true
+        Thread {
+            r.startEverything()
+            DispatchQueue.main.async {
+                busy = false
+                openScreen()
+            }
+        }.start()
     }
 
     // busy を触らない別経路: G1 テストや iosc の起動中でも状態だけは見たい

@@ -141,7 +141,7 @@ final class Runner {
     // 範囲をコンポジタの「画面」として渡す。避けずに全面を渡すと、一番上に置かれる
     // ioscbar が島の下に潜って読めなくなる(実機 2026-09-12)。
     // ContentView が起動時に実機の値を入れる。入らなかったときは 14 Pro の実寸。
-    static var logicalPoints = CGSize(width: 393, height: 852 - 59)
+    static var logicalPoints = CGSize(width: 393, height: 852 - 59 - 34)
     static var topInsetPoints: CGFloat = 59
 
     /// 実際に使えるロケールを 1 回だけ探す。Darwin の libc に glibc の "C.UTF-8" は無く、
@@ -168,8 +168,10 @@ final class Runner {
         }
         let b = win.bounds, ins = win.safeAreaInsets
         topInsetPoints = ins.top
-        logicalPoints = CGSize(width: b.width, height: b.height - ins.top)
-        return "画面 \(Int(b.width))x\(Int(b.height)) pt、上の安全領域 \(Int(ins.top)) pt "
+        // 下端はホームインジケータ(横棒)が乗る。ここに描くと指で触れないし、
+        // ドックを置いても棒と重なって読めない(実機 2026-09-12)
+        logicalPoints = CGSize(width: b.width, height: b.height - ins.top - ins.bottom)
+        return "画面 \(Int(b.width))x\(Int(b.height)) pt、安全領域 上 \(Int(ins.top)) / 下 \(Int(ins.bottom)) pt "
             + "-> コンポジタには \(Int(logicalPoints.width))x\(Int(logicalPoints.height)) pt を渡す"
     }
 
@@ -257,6 +259,16 @@ final class Runner {
         let bundle = Bundle.main.bundlePath
         for d in [home, runtimeDir, xiosDir] {
             try? FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
+        }
+        // 前回終了したときのソケットとロックが残っている。中身は死んでいるのに
+        // ファイルとしては在るので、「wayland-0 があるから iosc は動いている」という
+        // 判定が外れる(実機 2026-09-12: iosc 未起動のまま iosc-client が
+        // wl_display_connect failed で落ちた)。起動時に掃除する
+        for d in [runtimeDir, xiosDir] {
+            let fm = FileManager.default
+            for n in (try? fm.contentsOfDirectory(atPath: d)) ?? [] where n != "procd" {
+                try? fm.removeItem(atPath: d + "/" + n)
+            }
         }
         log.log("ロケール: \(Runner.locale)(この名前だけが setlocale を通った)")
         writeWidgetConfig()
@@ -443,23 +455,25 @@ final class Runner {
     // 2 秒眠るので**必ずバックグラウンドスレッドから**呼ぶこと。
     /// Wayland クライアントを 1 本起こす。コンポジタは繋いでくる相手が居ないと描くものが無いので、
     /// 画面に何かを出すには最低 1 本要る。ioscbg(背景)は fork も dbus も要らない一番軽い相手。
-    func startClient(_ path: String, label: String, args: [String] = []) {
+    func startClient(_ path: String, label: String, args: [String] = [],
+                     settle: TimeInterval = 1.5) {
         guard setup() else { log.log("\(label): setup 失敗"); return }
         log.log("=== \(label) 起動 ===")
         // クライアントが見るのはこの 2 つ。コンポジタと同じ値でなければ繋がらない
         for k in ["XDG_RUNTIME_DIR", "WAYLAND_DISPLAY"] {
             if let v = environment()[k] { setenv(k, v, 1); log.log("\(label) env \(k)=\(v)") }
         }
-        let sock = runtimeDir + "/wayland-0"
-        guard FileManager.default.fileExists(atPath: sock) else {
-            log.log("\(label): \(sock) が無い。先に iosc を起動する必要がある")
-            return
+        // ソケットの**ファイルがある**ことは iosc が生きている証拠にならない。
+        // 前回の残骸でも在るように見えるので、動いているかを直接見る
+        if !ioscAlive() {
+            log.log("\(label): iosc が動いていないので先に起こす")
+            guard ensureIoscReady() else { log.log("\(label): iosc を起こせなかった"); return }
         }
         let pid = start([path] + args, label: label)
         guard pid >= 0 else { return }
-        Thread.sleep(forTimeInterval: 1.5)
+        Thread.sleep(forTimeInterval: settle)
         fflush(nil)
-        log.log("\(label) 1.5 秒後: \(status())  [footprint \(footprintMB()) MB]")
+        log.log("\(label) \(String(format: "%.1f", settle)) 秒後: \(status())  [footprint \(footprintMB()) MB]")
     }
 
     /// iosc 以外で生きているスレッド(= Wayland クライアント)の本数。
@@ -502,6 +516,27 @@ final class Runner {
     func startDock() { startClient("/var/jb/usr/local/bin/ioscdock", label: "ioscdock") }
     /// 開いている窓の一覧。
     func startOverview() { startClient("/var/jb/usr/local/bin/ioscoverview", label: "ioscoverview") }
+
+    /// 試験用の「全部入り」。iosc を起こし、繋がる相手を端から全部起こす。
+    /// どれが出てどれが出ないかを 1 回で見るためのもので、普段使いの順番ではない。
+    /// 端末(foot)は擬似端末が開けないので必ず失敗する。それも含めて見たいので入れてある。
+    func startEverything() {
+        guard setup() else { log.log("全部: setup 失敗"); return }
+        log.log("=== 全部起動 ===")
+        guard ensureIoscReady() else { log.log("全部: iosc を起こせなかった"); return }
+        let all: [(String, String)] = [
+            ("/var/jb/usr/local/bin/ioscbar", "ioscbar"),
+            ("/var/jb/usr/local/bin/ioscdock", "ioscdock"),
+            ("/var/jb/usr/local/bin/iosc-client", "iosc-client"),
+            ("/var/jb/usr/local/bin/ioscoverview", "ioscoverview"),
+            (Self.footPath, "foot"),
+        ]
+        for (path, label) in all {
+            startClient(path, label: label, settle: 0.8)
+        }
+        log.log("=== 全部起動 おわり: \(status())  [footprint \(footprintMB()) MB] ===")
+        logDirs()
+    }
 
     func startIosc() {
         guard setup() else { log.log("iosc: setup 失敗"); return }
