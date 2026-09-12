@@ -33,7 +33,9 @@ if ($Release) {
     if ($Release -notmatch '^\d+\.\d+\.\d+$') { throw "-Release は X.Y.Z 形式で ($Release)" }
     $tag = "$($Name.ToLower())-v$Release"
     if (git tag -l $tag) { throw "タグ $tag は既にあります" }
-    $changelog = "apps\$Name\CHANGELOG.md"
+    # [IO.File] は .NET のカレントディレクトリを見る。Set-Location は PowerShell の
+    # 位置しか変えないので、相対パスのままだと起動時のディレクトリ次第で外す
+    $changelog = Join-Path $root "apps\$Name\CHANGELOG.md"
     if (-not (Test-Path $changelog)) { throw "$changelog がありません (docs/VERSIONING.md)" }
     $text = [IO.File]::ReadAllText($changelog)
     if ($text -notmatch '## \[Unreleased\]') { throw "$changelog に '## [Unreleased]' がありません" }

@@ -171,7 +171,10 @@ final class Runner {
             "XDG_DATA_DIRS": "/var/jb/usr/share",
             "PKG_CONFIG_PATH": "/var/jb/usr/lib/pkgconfig:/var/jb/usr/share/pkgconfig:/var/jb/usr/local/lib/pkgconfig",
             "TERM": "dumb",
-            "LANG": "C.UTF-8",
+            // Darwin の libc に glibc の "C.UTF-8" は無い(setlocale が失敗して "C" に落ち、
+            // foot が「'C' is not a UTF-8 locale」と言う)。Darwin にある綴りを使う
+            "LANG": "en_US.UTF-8",
+            "LC_CTYPE": "UTF-8",
             "LC_ALL": "C",
             "SHELL": "/var/jb/usr/bin/bash",
             "USER": "mobile",
@@ -387,6 +390,33 @@ final class Runner {
         log.log("\(label) 1.5 秒後: \(status())  [footprint \(footprintMB()) MB]")
     }
 
+    /// iosc 以外で生きているスレッド(= Wayland クライアント)の本数。
+    func clientCount() -> Int {
+        startedLock.lock()
+        let pids = started.filter { $0.value != "iosc" }.keys.sorted()
+        startedLock.unlock()
+        guard let aliveFn = aliveFn else { return pids.count }
+        var n = 0
+        for p in pids {
+            var st: Int32 = -1
+            if aliveFn(p, &st) == 1 { n += 1 }
+        }
+        return n
+    }
+
+    /// 画面に出すものが 1 つも無ければ背景を起こす。コンポジタは繋いでくる相手が
+    /// 居ないと描くものが無いので、これを忘れると「黒いまま」にしか見えない
+    /// (実機 2026-09-12: 画面 -> 背景 の順で押したため 1 フレームも出なかった)。
+    func ensureClient() {
+        let n = clientCount()
+        if n > 0 {
+            log.log("画面: クライアント \(n) 本が起動済み")
+            return
+        }
+        log.log("画面: クライアントが 1 本も居ないので背景(ioscbg)を起こす")
+        startBackground()
+    }
+
     /// 背景を描くだけのクライアント。画面に何か出るかを確かめる最小の相手。
     func startBackground() { startClient("/var/jb/usr/local/bin/ioscbg", label: "ioscbg") }
     /// パネル/ドック。cairo と pango で描くので、文字が出れば描画経路は完全に通っている。
@@ -396,6 +426,13 @@ final class Runner {
 
     func startIosc() {
         guard setup() else { log.log("iosc: setup 失敗"); return }
+        // 2 本目は wayland-0.lock を取れずに必ず失敗するが、そこに至るまでに
+        // IOSurface 3 枚と ANGLE の初期化を済ませてしまうので約 40MB を捨てることになる
+        // (実機 2026-09-12: pid 1007 が exit=1、footprint 82 -> 121MB)。手前で止める。
+        if ioscAlive() {
+            log.log("iosc: すでに起動済み(\(status()))。2 本目は lock を取れないので起こさない")
+            return
+        }
         log.log("=== iosc 起動 ===")
         for d in [runtimeDir, xiosDir] {
             do { try FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true) }
@@ -454,6 +491,7 @@ final class Runner {
         while waited <= 10_000 {
             if FileManager.default.fileExists(atPath: path) {
                 log.log("画面: ddx ソケットあり \(path)(待ち \(waited) ms)")
+                ensureClient()
                 return true
             }
             Thread.sleep(forTimeInterval: 0.1)

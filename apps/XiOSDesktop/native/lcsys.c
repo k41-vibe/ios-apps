@@ -206,11 +206,28 @@ int openat(int fd, const char *path, int oflag, ...)
 /* fopen/freopen: see the note in lcsys.h. Without these, everything that reads a data file
  * through the stdio layer (xkbcommon's rules, fontconfig, gsettings schemas, ...) bypasses
  * the /var/jb mapping, because libSystem calls its OWN open() internally. */
-FILE *fopen(const char *path, const char *mode)
+static FILE *lc_fopen_impl(const char *path, const char *mode)
 {
     char buf[LCSYS_PATH_MAX];
     ENSURE();
     return lcsys_real.fopen(MAPPED(path, buf), mode);
+}
+
+/* fopen も realpath と同じで Darwin では 2 つの名前を持つ。<stdio.h> が
+ * __DARWIN_ALIAS_STARTING で切り替えるので、どちらで呼ばれるかはゲストの
+ * 各パッケージのビルド設定次第になる。実測(ipa 内の 308 本を走査):
+ * plain が iosc など、`$DARWIN_EXTSN` が libxkbcommon を含む 132 本。
+ * 片方しか定義していなかったので、その 132 本は経路変換を素通りしていた。 */
+FILE *lc_fopen_plain(const char *, const char *) __asm__("_fopen");
+FILE *lc_fopen_plain(const char *path, const char *mode)
+{
+    return lc_fopen_impl(path, mode);
+}
+
+FILE *lc_fopen_extsn(const char *, const char *) __asm__("_fopen$DARWIN_EXTSN");
+FILE *lc_fopen_extsn(const char *path, const char *mode)
+{
+    return lc_fopen_impl(path, mode);
 }
 
 FILE *freopen(const char *path, const char *mode, FILE *stream)

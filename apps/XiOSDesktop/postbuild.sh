@@ -98,6 +98,15 @@ print("jb/ raw Mach-O: %d, installer-visible names: %d" % (len(raw), len(bait)))
 sys.exit(1 if (raw or bait) else 0)
 PY
 
+# Darwin の libc は同じ関数を 2 つの名前で出すことがある(`_fopen` と `_fopen$DARWIN_EXTSN`)。
+# 基本名しか定義していないと、もう片方で呼ぶバイナリは経路変換を素通りする。
+# 2026-09-12 の実機で xkb のキーマップが読めなかったのがこれ(132 本が取りこぼし)。
+echo "== auditing libc alias names (_fopen vs _fopen\$DARWIN_EXTSN)"
+python3 "$HERE/../../tools/xios/audit_aliases.py" "$OUT" "$FW" || {
+  echo "::error::libLCsys が別名を落としている(上の MISS 行)。lcsys.c に別名の定義を足す"
+  exit 1
+}
+
 echo "Frameworks/: $(ls "$FW" | wc -l) entries"
 echo "jb/ files: $(find "$APP_DIR/jb" -type f | wc -l), symlinks: $(find "$APP_DIR/jb" -type l | wc -l), .symlink markers: $(find "$APP_DIR/jb" -name '*.symlink' | wc -l)"
 du -sh "$FW" "$APP_DIR/jb" "$APP_DIR"
