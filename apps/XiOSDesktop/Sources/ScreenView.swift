@@ -142,7 +142,8 @@ final class ScreenClient: NSObject, MTKViewDelegate {
 
     // ---- 入力(第 6 節)。画面と同じ 32 バイトのレコードを別のソケットに流す
     var xin: XInputAPI?
-    private var inputConn: UnsafeMutableRawPointer?
+    private var inputConn: UnsafeMutableRawPointer?   // 指 -> iosc
+    private var textConn: UnsafeMutableRawPointer?    // 文字 -> ios-inputd(入力メソッド)
     private var slots: [ObjectIdentifier: Int32] = [:]   // UITouch -> スロット 0..9
     private var lastViewport: MTLViewport?
     private var touchesSent = 0
@@ -278,7 +279,19 @@ final class ScreenClient: NSObject, MTKViewDelegate {
             return
         }
         inputConn = c
-        log.log("入力: 接続 \(path)")
+        log.log("入力: 指の出し先 \(path)")
+    }
+
+    /// 文字の出し先。ios-inputd が知っている記録は MOTION / KEY / TEXT だけなので、
+    /// 指(TOUCH)を同じ口に流すと切られる。だから口を 2 つに分ける。
+    func connectText(path: String) {
+        guard textConn == nil, let xin = xin else { return }
+        guard let c = path.withCString({ xin.connect($0) }) else {
+            log.log("入力: 文字の口に繋がらない \(path) errno \(errno)")
+            return
+        }
+        textConn = c
+        log.log("入力: 文字の出し先 \(path)")
     }
 
     /// 画面上の点(ポイント)を出力(IOSurface)のピクセルに戻す。範囲外は nil。
@@ -335,13 +348,13 @@ final class ScreenClient: NSObject, MTKViewDelegate {
 
     /// X の keysym を押して離す。改行 0xff0d、後退 0xff08。
     func sendKey(_ keysym: Int32) {
-        guard let conn = inputConn, let xin = xin else { return }
+        guard let conn = textConn ?? inputConn, let xin = xin else { return }
         _ = xin.key(conn, keysym, 1, 0)
         _ = xin.key(conn, keysym, 0, 0)
     }
 
     func send(text: String) {
-        guard let conn = inputConn, let xin = xin, !text.isEmpty else { return }
+        guard let conn = textConn ?? inputConn, let xin = xin, !text.isEmpty else { return }
         _ = text.withCString { xin.text(conn, $0) }
         log.log("入力: text \(text.count) 文字")
     }

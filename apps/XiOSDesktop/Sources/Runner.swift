@@ -503,10 +503,14 @@ final class Runner {
         return out
     }
 
-    /// iosc 以外で生きているスレッド(= Wayland クライアント)の本数。
+    /// 画面に何かを描くクライアントではないもの。数に入れると壁紙が起きなくなる
+    /// (実機 2026-09-12: ios-inputd を 1 本と数えて背景を起こさず、真っ暗のままだった)
+    static let nonDrawing: Set<String> = ["iosc", "ios-inputd", "dbus-daemon"]
+
+    /// iosc 以外で生きているスレッド(= 画面に描く Wayland クライアント)の本数。
     func clientCount() -> Int {
         startedLock.lock()
-        let pids = started.filter { $0.value != "iosc" }.keys.sorted()
+        let pids = started.filter { !Self.nonDrawing.contains($0.value) }.keys.sorted()
         startedLock.unlock()
         guard let aliveFn = aliveFn else { return pids.count }
         var n = 0
@@ -575,6 +579,7 @@ final class Runner {
         guard setup() else { log.log("セッション: setup 失敗"); return }
         log.log("=== セッション開始 ===")
         guard ensureIoscReady() else { log.log("セッション: iosc を起こせなかった"); return }
+        startBackground()
         startBar()
         startDock()
         log.log("=== セッション: \(status())  [footprint \(footprintMB()) MB] ===")
@@ -655,8 +660,14 @@ final class Runner {
     /// 「something is already listening there」で起動を断られる)
     var inputdSocketPath: String { xiosDir + "/i2" }
 
-    /// 入力の出し先。ios-inputd が居ればそちら、居なければ iosc に直結(従来どおり)
-    func inputPath() -> String {
+    /// 指(タッチ・ポインタ)の出し先。これは iosc に直結する。
+    /// ios-inputd が知っている記録は MOTION / KEY / TEXT の 3 つだけで(逆アセンブルで確認)、
+    /// TOUCH を送ると語彙に無いものとして接続を切られる。指の係ではないので当然だった。
+    func inputPath() -> String { xiosDir + "/in" }
+
+    /// 文字(TEXT / KEY)の出し先。ios-inputd が居ればそちら、居なければ iosc。
+    /// ここを通すと入力メソッドとして今選ばれている窓へ入る(improxy)。
+    func textPath() -> String {
         aliveLabels().contains("ios-inputd") ? inputdSocketPath : xiosDir + "/in"
     }
 
