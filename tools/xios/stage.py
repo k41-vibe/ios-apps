@@ -597,6 +597,32 @@ def human(n):
         n /= 1024.0
 
 
+# postinst が走らないので、台帳のテキストだけここで置く(libiosexec の getgrent.c は
+# /var/jb/etc/group を fopen、getusershell.c は /var/jb/etc/shells を読む)。passwd の側は
+# pwd.db(ハッシュ DB)で、libLCsys が dbopen を横取りして mobile / root を返すので、
+# ここに置く passwd は参考(cat /etc/passwd 用)にすぎない。deb が同じ名前を持って来たら譲る。
+ETC_DEFAULTS = {
+    "etc/passwd": ("root:*:0:0:System Administrator:/var/root:/var/jb/usr/bin/bash\n"
+                   "mobile:*:501:501:Mobile User:/var/mobile:/var/jb/usr/bin/bash\n"),
+    "etc/group": "wheel:*:0:root\nstaff:*:20:root\nmobile:*:501:mobile\n",
+    "etc/shells": ("/var/jb/bin/sh\n/var/jb/bin/bash\n/var/jb/usr/bin/bash\n"
+                   "/var/jb/usr/bin/sh\n/var/jb/usr/bin/zsh\n"),
+}
+
+
+def write_etc_defaults(jb_root):
+    written = []
+    for rel, text in ETC_DEFAULTS.items():
+        dest = os.path.join(jb_root, rel)
+        if os.path.exists(dest):
+            continue
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        written.append(rel)
+    log("etc defaults: wrote %s" % (", ".join(written) or "nothing (all shipped by packages)"))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--urls", required=True)
@@ -681,6 +707,9 @@ def main(argv=None):
             % (len(records["overwritten"]), records["overwritten"][:5]))
     if records["skipped"]:
         log("  NOTE skipped %d unsupported tar entries: %s" % (len(records["skipped"]), records["skipped"][:5]))
+
+    # 2b. 台帳のテキスト(group / shells / passwd)
+    write_etc_defaults(jb_root)
 
     # 3+4. relink Mach-Os, write stubs + manifest
     reconcile_records(records)
