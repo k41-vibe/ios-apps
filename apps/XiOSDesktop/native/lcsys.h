@@ -51,6 +51,14 @@ int lcsys_wait(int pid, int *status);
  * 1 = running, 0 = finished (*status = exit code), -1 = unknown pid (ECHILD).
  * `status` may be NULL. lcsys_wait stays the only thing that frees a proc. */
 int lcsys_alive(int pid, int *status);
+
+/* いま動いているのがゲスト(procd が起こした)のスレッドか。
+ * fork の再現(native/lcfork.c)と、標準入出力を守る判断に使う。 */
+int lcsys_is_guest_thread(void);
+
+/* fork() の子として、procd の台帳に載ったスレッドを 1 本立てる。
+ * fn は複製したスタックへ飛ぶので普通は戻ってこない。返り値は擬似 pid。 */
+int lcsys_fork_child(void (*fn)(void *), void *arg);
 int lcsys_init(const char *bundle_path, const char *home, const char *tmp, int log_fd);
 void lcsys_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 /* xpcshim.m: replace the com.max.xios.metal-event-broker XPC service (a root

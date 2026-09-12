@@ -64,6 +64,84 @@ static void make_key(void)
     pthread_key_create(&guest_key, NULL);
 }
 
+/* ------------------------------------------------------ fork の受け皿 */
+
+/* いま動いているのがゲストのスレッドか。fork の再現と、標準入出力を守る判断に使う */
+int lcsys_is_guest_thread(void)
+{
+    pthread_once(&key_once, make_key);
+    return pthread_getspecific(guest_key) != NULL;
+}
+
+struct fork_arg {
+    void (*fn)(void *);
+    void *arg;
+    struct lc_proc *p;
+};
+
+static void *fork_thread(void *a)
+{
+    struct fork_arg *f = (struct fork_arg *)a;
+    struct lc_proc *p = f->p;
+    void (*fn)(void *) = f->fn;
+    void *arg = f->arg;
+    pthread_setspecific(guest_key, p);
+    free(f);
+    fn(arg);      /* 普通は戻ってこない(複製したスタックに飛び、最後は _exit) */
+    p->status = 0;
+    p->done = 1;
+    return NULL;
+}
+
+/* fork() の子として、記録の付いたスレッドを 1 本立てる。返すのは擬似 pid。
+ * 中身(スタックの複製と文脈の復元)は native/lcfork.c の仕事で、ここは
+ * 「procd の台帳に載せて、ゲストの印を付けたスレッドを用意する」だけ。 */
+int lcsys_fork_child(void (*fn)(void *), void *arg)
+{
+    struct lc_proc *p, *parent;
+    struct fork_arg *f;
+    pthread_attr_t attr;
+    int rc;
+
+    pthread_once(&key_once, make_key);
+    parent = (struct lc_proc *)pthread_getspecific(guest_key);
+    p = (struct lc_proc *)calloc(1, sizeof *p);
+    f = (struct fork_arg *)calloc(1, sizeof *f);
+    if (!p || !f) {
+        free(p);
+        free(f);
+        return -1;
+    }
+    p->guest_path = strdup(parent && parent->guest_path ? parent->guest_path : "(fork)");
+    p->image_path = strdup(p->guest_path ? p->guest_path : "(fork)");
+    f->fn = fn;
+    f->arg = arg;
+    f->p = p;
+
+    pthread_mutex_lock(&procs_lock);
+    p->pid = next_pid++;
+    p->next = procs;
+    procs = p;
+    pthread_mutex_unlock(&procs_lock);
+
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, GUEST_STACK);
+    rc = pthread_create(&p->thread, &attr, fork_thread, f);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) {
+        pthread_mutex_lock(&procs_lock);
+        if (procs == p)
+            procs = p->next;
+        pthread_mutex_unlock(&procs_lock);
+        free(f);
+        free_proc(p);
+        lcsys_log("fork: pthread_create failed (%d)", rc);
+        return -1;
+    }
+    pthread_detach(p->thread);
+    return p->pid;
+}
+
 /* ------------------------------------------------------ exit hook */
 
 int lcsys_guest_exit(int status)

@@ -15,6 +15,7 @@ OUT="$FW/libLCsys.dylib"
 
 CFLAGS=(-target arm64-apple-ios16.0 -isysroot "$SDK" -O2 -Wall -Wno-deprecated-declarations
         -fvisibility=default -dynamiclib -install_name @rpath/libLCsys.dylib)
+# native/lcfork_ctx.S is hand-written arm64 (our own setjmp/longjmp for the fork clone).
 # native/xpcshim.m is Objective-C written for MANUAL retain/release: do NOT add
 # -fobjc-arc (MRR is clang's default for .m, so no flag is needed either way).
 # Foundation/libobjc are what the NSXPCConnection swizzle needs; Metal is there because
@@ -23,7 +24,7 @@ CFLAGS=(-target arm64-apple-ios16.0 -isysroot "$SDK" -O2 -Wall -Wno-deprecated-d
 # native/xsurface.c (IOSurfaceLookupFromMachPort / CFRelease); both are public on iOS.
 LDFLAGS=(-framework Foundation -framework Metal -framework IOSurface -framework CoreFoundation -lobjc)
 shopt -s nullglob
-SRCS=("$HERE"/native/*.c "$HERE"/native/*.m)
+SRCS=("$HERE"/native/*.c "$HERE"/native/*.m "$HERE"/native/*.S)
 shopt -u nullglob
 [ ${#SRCS[@]} -gt 0 ] || { echo "::error::no sources in $HERE/native"; exit 1; }
 
@@ -54,7 +55,7 @@ echo "== libLCsys.dylib load commands"
 otool -L "$OUT"
 otool -l "$OUT" | grep -A2 LC_REEXPORT_DYLIB
 echo "== exported overrides (expect open/stat/statfs/exit/dlopen/lcsys_*/xs_*/xi_*):"
-nm -gU "$OUT" | grep -E ' _(open|stat|lstat|exit|_exit|fork|dlopen|realpath|posix_spawn|lcsys_init|lcsys_spawn|lcsys_wait|lcsys_install_xpc_shim|lcsys_shared_event_for_token|xs_connect|xs_poll|xs_release|xs_presented|xs_surface|xs_close|xi_connect|xi_touch|xi_text|xi_key|statfs|statvfs)($|[$])' || true
+nm -gU "$OUT" | grep -E ' _(open|stat|lstat|exit|_exit|fork|dlopen|realpath|posix_spawn|lcsys_init|lcsys_spawn|lcsys_wait|lcsys_install_xpc_shim|lcsys_shared_event_for_token|xs_connect|xs_poll|xs_release|xs_presented|xs_surface|xs_close|xi_connect|xi_touch|xi_text|xi_key|statfs|statvfs|fork|vfork|lc_savectx|lc_restorectx|lcsys_fork_child)($|[$])' || true
 
 echo "== copying staged tree from $STAGE_DIR"
 test -d "$STAGE_DIR/Frameworks" || { echo "::error::$STAGE_DIR/Frameworks missing"; exit 1; }

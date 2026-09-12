@@ -239,6 +239,33 @@ FILE *freopen(const char *path, const char *mode, FILE *stream)
     return lcsys_real.freopen(path ? MAPPED(path, buf) : path, mode, stream);
 }
 
+/* ゲストが標準入出力を差し替えると、プロセス全体で 1 組しかないので
+ * こちらのログの通り道まで巻き込まれる(fork の子は普通 /dev/null を被せる)。
+ * ゲストのスレッドからの 0/1/2 への差し替えと閉じるのは空振りさせる。 */
+int dup2(int oldfd, int newfd)
+{
+    static int (*real)(int, int);
+    if (newfd >= 0 && newfd <= 2 && lcsys_is_guest_thread()) {
+        lcsys_log("dup2(%d -> %d): ゲストなので見送る(ログの通り道を守る)", oldfd, newfd);
+        return newfd;
+    }
+    if (!real)
+        real = (int (*)(int, int))find_real("dup2");
+    return real ? real(oldfd, newfd) : -1;
+}
+
+int close(int fd)
+{
+    static int (*real)(int);
+    if (fd >= 0 && fd <= 2 && lcsys_is_guest_thread()) {
+        lcsys_log("close(%d): ゲストなので見送る", fd);
+        return 0;
+    }
+    if (!real)
+        real = (int (*)(int))find_real("close");
+    return real ? real(fd) : -1;
+}
+
 int stat(const char *path, struct stat *st)
 {
     char buf[LCSYS_PATH_MAX];
@@ -570,21 +597,8 @@ int posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_actions_t 
     return spawn_via_procd("posix_spawnp", pid, file, argv, envp);
 }
 
-pid_t fork(void)
-{
-    lcsys_log("fork() -> -1 errno=%d (G1: no fork)", lcsys_cfg.fork_errno);
-    errno = lcsys_cfg.fork_errno ? lcsys_cfg.fork_errno : EAGAIN;
-    return -1;
-}
-
-/* unistd.h may mark vfork unavailable on iOS; define the symbol under another C name */
-pid_t lc_vfork(void) __asm__("_vfork");
-pid_t lc_vfork(void)
-{
-    lcsys_log("vfork() -> -1 errno=%d (G1: no fork)", lcsys_cfg.fork_errno);
-    errno = lcsys_cfg.fork_errno ? lcsys_cfg.fork_errno : EAGAIN;
-    return -1;
-}
+/* fork / vfork は native/lcfork.c に移した(スタックを複製してスレッドで再現する)。
+ * 従来どおり -1 を返させたいときは LCSYS_FORK=fail。 */
 
 void exit(int status)
 {
