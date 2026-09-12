@@ -3,7 +3,6 @@ adwaita-icon-theme	46.0+ios1	0	971106	maxleiter	https://repo.maxleiter.com/debs/
 angle	2.1.0+git20260630.a32d31d+es3-16	13512	3946928	maxleiter	https://repo.maxleiter.com/debs/angle_2.1.0+git20260630.a32d31d+es3-16_iphoneos-arm64.deb
 bash	5.2.21	4704	568806	procursus	https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/bash/bash_5.2.21_iphoneos-arm64.deb
 ca-certificates	20240602	232	128768	procursus	https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/cacerts/ca-certificates_20240602_all.deb
-com.max.xios	0.1.11	0	492100	maxleiter	https://repo.maxleiter.com/debs/com.max.xios_0.1.11_iphoneos-arm64.deb
 coreutils	9.5	26668	2866666	procursus	https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/coreutils/coreutils_9.5_iphoneos-arm64.deb
 dash	0.5.12	188	75658	procursus	https://apt.procurs.us/pool/main/iphoneos-arm64-rootless/1800/dash/dash_0.5.12_iphoneos-arm64.deb
 dbus	1.14.10+ios1	1480	312340	maxleiter	https://repo.maxleiter.com/debs/dbus_1.14.10+ios1_iphoneos-arm64.deb
