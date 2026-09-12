@@ -23,7 +23,9 @@ struct ContentView: View {
             if mode == .screen, let client = screen {
                 ZStack(alignment: .topTrailing) {
                     ScreenView(client: client)
-                        .ignoresSafeArea()
+                        // 上端だけは譲る。Dynamic Island とステータスバーが乗っていて、
+                        // そこに描いてもコンポジタの一番上の帯(ioscbar)が読めない
+                        .ignoresSafeArea(edges: [.bottom, .horizontal])
                     // ログは常に取り戻せるようにしておく(iosc が落ちたときに見たいのはログ)
                     Button("コンソール") { mode = .console }
                         .buttonStyle(.borderedProminent)
@@ -39,6 +41,7 @@ struct ContentView: View {
             started = true
             let prev = log.previous()
             log.log("XiOSDesktop \(AppVersion.string)")
+            log.log(Runner.measureScreen())
             log.log(prev.isEmpty ? "--- first launch ---"
                                  : "--- launch (previous log \(prev.split(separator: "\n").count) lines) ---")
             runTests()

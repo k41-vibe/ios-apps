@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import UIKit
 
 // コンソール。画面用の文字列と、落ちても残るようファイルへ書く。
 //
@@ -134,6 +135,32 @@ final class Runner {
     static let pathDirs = "/var/jb/usr/bin:/var/jb/usr/local/bin:/var/jb/bin"
     static let ioscPath = "/var/jb/usr/local/bin/iosc"
     static let footPath = "/var/jb/usr/bin/foot"
+
+    // ------------------------------------------------------------ 画面の大きさ
+    // 上端は Dynamic Island と iOS のステータスバーが占めているので、そこを避けた
+    // 範囲をコンポジタの「画面」として渡す。避けずに全面を渡すと、一番上に置かれる
+    // ioscbar が島の下に潜って読めなくなる(実機 2026-09-12)。
+    // ContentView が起動時に実機の値を入れる。入らなかったときは 14 Pro の実寸。
+    static var logicalPoints = CGSize(width: 393, height: 852 - 59)
+    static var topInsetPoints: CGFloat = 59
+
+    /// UIKit から安全領域を読んで logicalPoints を決める。**メインスレッドから呼ぶこと**。
+    static func measureScreen() -> String {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        guard let win = scenes.flatMap({ $0.windows }).first(where: { $0.isKeyWindow })
+                ?? scenes.flatMap({ $0.windows }).first else {
+            return "画面の大きさが読めないので既定値 \(Int(logicalPoints.width))x\(Int(logicalPoints.height)) を使う"
+        }
+        let b = win.bounds, ins = win.safeAreaInsets
+        topInsetPoints = ins.top
+        logicalPoints = CGSize(width: b.width, height: b.height - ins.top)
+        return "画面 \(Int(b.width))x\(Int(b.height)) pt、上の安全領域 \(Int(ins.top)) pt "
+            + "-> コンポジタには \(Int(logicalPoints.width))x\(Int(logicalPoints.height)) pt を渡す"
+    }
+
+    static func logicalArg() -> String {
+        "\(Int(logicalPoints.width.rounded()))x\(Int(logicalPoints.height.rounded()))"
+    }
     /// 経路変換の追跡。iosc を起こす前に立てること(環境変数はプロセス全体で 1 つ)
     static var traceEnabled = false
 
@@ -174,11 +201,38 @@ final class Runner {
             // Darwin の libc に glibc の "C.UTF-8" は無い(setlocale が失敗して "C" に落ち、
             // foot が「'C' is not a UTF-8 locale」と言う)。Darwin にある綴りを使う
             "LANG": "en_US.UTF-8",
-            "LC_CTYPE": "UTF-8",
-            "LC_ALL": "C",
+            "LC_CTYPE": "en_US.UTF-8",
+            // LC_ALL は LANG より優先される。ここが "C" のままだと LANG を直しても効かない
+            "LC_ALL": "en_US.UTF-8",
+            // ioscbg のデスクトップ部品(Storage / Memory / Load / Session)の置き場。
+            // 設定ファイルが無いと 1 つも描かれない(実機 2026-09-12「ストレージが出ない」)
+            "IOSC_WIDGET_CONFIG": widgetConfigPath,
             "SHELL": "/var/jb/usr/bin/bash",
             "USER": "mobile",
         ]
+    }
+
+    // ------------------------------------------------------------ デスクトップ部品
+
+    var widgetConfigPath: String { home + "/iosc-widgets.conf" }
+
+    /// ioscbg が読む部品の配置。書式は逆アセンブルで確かめた `名前 x y 有効` の 4 つ組
+    /// (`fscanf(f, "%31s %d %d %d")` が 4 を返したときだけ採用し、3 番目は 0 以外なら表示)。
+    /// 名前は storage / memory / load / uptime の 4 つで、表示名は Storage / Memory / Load / Session。
+    /// 既定の置き場 /var/mobile/Library/Preferences/com.max.iosc-widgets.conf は
+    /// このサンドボックスには無いので、環境変数で自前の場所を指す。
+    func writeWidgetConfig() {
+        let text = """
+        storage 24 140 1
+        memory 24 260 1
+        load 24 380 1
+        uptime 24 500 1
+        """
+        do {
+            try text.write(toFile: widgetConfigPath, atomically: true, encoding: .utf8)
+        } catch {
+            log.log("デスクトップ部品の設定が書けない: \(error.localizedDescription)")
+        }
     }
 
     // 1 回だけ: パイプを fd1/2 に被せ、libLCsys を読み、lcsys_init
@@ -189,6 +243,7 @@ final class Runner {
         for d in [home, runtimeDir, xiosDir] {
             try? FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
         }
+        writeWidgetConfig()
         for (k, v) in environment() { setenv(k, v, 1) }
 
         var fds: [Int32] = [-1, -1]
@@ -356,8 +411,9 @@ final class Runner {
     //            iosc-clipboard.sock, iosc-wm.sock}
     func ioscArgv() -> [String] {
         [Self.ioscPath,
-         // 14 Pro は 393x852 pt @3x = 1179x2556 px。等倍にして表示の変換を 1:1 にする
-         "-classic", "-logical", "393x852", "-scale", "3", "-dpi", "96",
+         // 14 Pro は 393x852 pt @3x。上の安全領域(59 pt)を引いた範囲を渡し、
+         // 表示側も同じ範囲に置くことで拡大縮小を 1:1 に保つ
+         "-classic", "-logical", Self.logicalArg(), "-scale", "3", "-dpi", "96",
          "-s", "wayland-0",
 
          "-ddx-sock", xiosDir + "/ddx",
