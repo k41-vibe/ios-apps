@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-12
+
 ### Fixed
 - 経路変換層がホストの実パスまで書き換えていた。iosc には `XDG_RUNTIME_DIR` とソケットのパスを
   アプリ内の実パスで渡すので、libwayland が開く `<XDG_RUNTIME_DIR>/wayland-0.lock` が
