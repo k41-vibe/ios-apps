@@ -13,6 +13,8 @@
  *   pathmap.c  /var/jb/... -> <bundle>/jb/...   (+ .symlink markers, "<name>.lc" @LC: stubs)
  *   lcsys.c    the overridden libc entry points + init/logging
  *   procd.c    "processes" as threads: dlopen(flat dylib) + call LC_MAIN entry
+ *   xpcshim.m  the in-process stand-in for the metal-event-broker XPC service
+ *   xsurface.c the ddx client: iosc's IOSurfaces + fences, for the Swift screen
  *
  * G1 limits (documented in README.md): environ, cwd, fd 0/1/2 and signal
  * dispositions are process-global; exec/spawn/fork are stubs that only log.
@@ -21,6 +23,7 @@
 #define LCSYS_H
 
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <sys/types.h>
@@ -54,6 +57,46 @@ void lcsys_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
  * place. Without it iosc dies at startup (iosc.c:6921 "FATAL: GPU compositor
  * initialization failed"); see tools/xios/iosc-host-protocol.md section 4. */
 void lcsys_install_xpc_shim(void);
+/* xpcshim.m: token -> id<MTLSharedEvent> for `mtl_device`, the in-process replacement
+ * for xios_metal_event_broker_copy_event(). Looks the 32-byte token up in the same
+ * table iosc publishes into and returns -newSharedEventWithHandle: (+1 RETAINED, the
+ * caller owns it), or NULL when the token is unknown (logged as a miss).
+ * `mtl_device` is an id<MTLDevice> and the result an id<MTLSharedEvent>; both are
+ * typed void * so that no Metal header is needed on either side. */
+void *lcsys_shared_event_for_token(void *mtl_device, const unsigned char *token, size_t len);
+
+/* ---- xsurface.c: the ddx (display) client ----
+ * Our side of iosc's -ddx-sock. See tools/xios/iosc-host-protocol.md sections 2-5;
+ * the ordering rules there (mach message before the socket HELLO, one RELEASED per
+ * DIRTY, the release-event signal committed BEFORE the RELEASED goes out) are part of
+ * the contract, not implementation detail. */
+#define XS_TOKEN_BYTES 32
+#define XS_HELLO_CAP_STREAM_V2 (1u << 0)
+
+typedef struct xs_conn xs_conn;
+
+/* Connect, do the HELLO + mach handshake, learn every output surface. STREAM_V2 is
+ * tried first and caps=0 second. NULL + errno on failure. */
+xs_conn *xs_connect(const char *ddx_sock_path);
+/* Non-blocking drain. 1 = a DIRTY arrived (*surface_id, *seq, *fence_value filled),
+ * 0 = nothing pending, -1 = error/disconnected. Returns as soon as one DIRTY is ready,
+ * so the caller can ack exactly one frame per call. */
+int xs_poll(xs_conn *c, uint32_t *surface_id, uint64_t *seq, uint64_t *fence_value);
+/* The IOSurfaceRef for a surface id learned during the handshake (NULL if unknown).
+ * Owned by the connection; do not release it. */
+void *xs_surface(xs_conn *c, uint32_t surface_id);
+int xs_count(xs_conn *c);
+void xs_info(xs_conn *c, int *w, int *h, int *stride);
+/* Tell iosc the buffer is free again. MUST follow a committed signal of the release
+ * event with this same seq. One RELEASED per DIRTY, never coalesced. */
+int xs_release(xs_conn *c, uint32_t surface_id, uint64_t seq);
+int xs_presented(xs_conn *c, uint64_t seq, uint32_t us_since_present, int measured);
+void xs_close(xs_conn *c);
+/* The 32-byte tokens, raw: the release timeline arrives once in STREAM_INFO, the
+ * presentation fence with every DIRTY (so read it right after xs_poll returned 1).
+ * The storage belongs to the connection. */
+const unsigned char *xs_release_token(xs_conn *c);
+const unsigned char *xs_last_fence_token(xs_conn *c);
 
 /* Guest path -> host path. Pure string mapping, no filesystem access.
  * Returns out (always NUL-terminated; truncated silently at cap). */

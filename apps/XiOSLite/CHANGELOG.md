@@ -5,6 +5,26 @@
 
 ## [Unreleased]
 
+### Added
+- **ddx クライアント** `native/xsurface.c`。iosc の `-ddx-sock` に繋いで画面を受け取る側
+  (`x11/apps/Xios/Sources/XSurface.c` の移植、`tools/xios/iosc-host-protocol.md` 2〜5 節)。
+  握手は仕様どおりの順番: connect → 返信用 mach ポート → HELLO → **先に mach メッセージ**で
+  主 IOSurface → ソケットのサーバー HELLO → STREAM_INFO(解放タイムラインの 32 バイト
+  トークン)→ 残りのバッファごとに「mach ポート 1 通 → SURFACE レコード」→ `O_NONBLOCK`。
+  `caps=STREAM_V2` で試して駄目なら `caps=0` に落とす。DIRTY 1 回につき RELEASED 1 回
+  (まとめない。返さないと 3 枚とも pending になって画面が固まる)
+- **フェンスの受け渡し** `lcsys_shared_event_for_token()`(`native/xpcshim.m`)。iosc が
+  publish したのと同じプロセス内テーブルからトークンを引き、`newSharedEventWithHandle:` で
+  `id<MTLSharedEvent>` を返す(root の XPC ブローカー `copy_event` の代わり)。Metal の
+  ヘッダは取り込まず、セレクタだけを使う
+- **画面** `Sources/ScreenView.swift`。`MTKView` に iosc の IOSurface を貼る
+  (面 id ごとに `MTLTexture` を 1 枚だけ作って使い回す)。描く前に提示フェンスを
+  `encodeWaitForEvent`、present 後の完了ハンドラで解放イベントに `encodeSignalEvent` した
+  コマンドバッファを **commit してから** RELEASED を送る。`presentedTime` が取れたら
+  PRESENTED も返す。60 フレームごとに fps / 面 id / footprint をログに出す
+- 「画面」ボタン。iosc が居なければ起こし、ddx ソケットができるまで最大 10 秒待ってから
+  全画面に切り替える。右上の「コンソール」でいつでもログに戻れる
+
 ### Fixed
 - `fopen`/`freopen` を横取りしていなかった。libSystem は内部で自前の `open` を呼ぶので、
   stdio 経由でファイルを読むゲストはパス変換を素通りする。実機で xkbcommon が
