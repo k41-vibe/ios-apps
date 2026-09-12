@@ -10,6 +10,13 @@
 
 `docs/review-2026-09-13.md`(xiOS のソースと設計文書との照合)に基づく一括の見直し。
 
+### Fixed
+- **起動直後に落ちる**(開発ビルド 0.0.20260913、クラッシュレポート `LiveContainer-2026-09-13-020018.ips`)。
+  初回起動で生成する gdk-pixbuf の `loaders.cache` に `""` の行を置いていたが、
+  `gdk_pixbuf_io_init_modules` のパーサではモジュールの終わりは空行。`""` はパターン行として
+  読まれて失敗し、上流のエラー経路(`g_free(pattern)`、配列の途中)で libmalloc が abort。
+  ioscbar が壁紙アイコンを読んだ瞬間にプロセスごと死んでいた。書式を直し、生成物は毎回書き直す
+
 ### Removed
 - **`ios-inputd`**。iosc の classic セッションでは要らない: `iosc.c in_dispatch_text()` は
   代理が居なければ自分の text-input-v3 で今選ばれている窓に文字を入れる
