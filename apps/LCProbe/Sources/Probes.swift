@@ -83,10 +83,13 @@ enum Probes {
         L.log("pid \(getpid()) uid \(getuid())")
     }
 
-    // Frameworks/libprobe1..800.dylib を段階的に dlopen し、時間と footprint を記録
+    // Frameworks/libprobe*.dylib を段階的に dlopen し、時間と footprint を記録
     static func dlopenTiers(_ L: ProbeLog) {
         L.log("=== dlopen tiers ===")
-        let tiers = [50, 200, 800]
+        // 段階は Frameworks/ の実本数に合わせる(postbuild.sh の LCPROBE_DYLIBS)
+        let total = (try? FileManager.default.contentsOfDirectory(atPath: frameworksDir))?
+            .filter { $0.hasPrefix("libprobe") }.count ?? 0
+        let tiers = [total / 4, total / 2, total].filter { $0 > 0 }
         var opened = 0
         var failed = 0
         let t0 = Date()
@@ -118,7 +121,11 @@ enum Probes {
         }
     }
 
-    // 実行時に Documents へコピーした dylib を dlopen できるか(JIT-less では失敗する見込み)
+    // 実行時に Documents へコピーした dylib を dlopen できるか。
+    // 【注意】これは JIT の有無の判定には使えない。コピー元は LiveContainer が署名済みで、
+    // 署名ごと複製されるため JIT-less でも成功する(実機 2026-09-12 で確認)。
+    // 意味があるのは「署名済みバイナリなら実行時にコピーして読み込める」という事実のほうで、
+    // procd の私的コピー方式(procd.c)はこれに乗っている。
     static func runtimeDlopen(_ L: ProbeLog) {
         L.log("=== runtime dlopen ===")
         let src = URL(fileURLWithPath: "\(frameworksDir)/libprobe1.dylib")
@@ -129,7 +136,7 @@ enum Probes {
             L.log("copy failed: \(error)"); return
         }
         if dlopen(dst.path, RTLD_NOW) != nil {
-            L.log("runtime dlopen OK (unsigned code from Documents runs -> JIT mode)")
+            L.log("runtime dlopen OK (署名済み dylib のコピーは JIT-less でも読める。JIT の証拠ではない)")
         } else {
             L.log("runtime dlopen FAILED: \(String(cString: dlerror()))")
         }

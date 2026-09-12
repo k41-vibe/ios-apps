@@ -1,13 +1,15 @@
 #!/bin/bash
 # Called by the workflow after xcodebuild, before packaging.
 # $APP_DIR = path to the built LCProbe.app
-# Generates 800 tiny dylibs into Frameworks/ for the dlopen-count probe.
+# Generates N tiny dylibs into Frameworks/ for the dlopen-count probe (N は下で決める)。
 set -euo pipefail
 FW="$APP_DIR/Frameworks"
 mkdir -p "$FW"
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 WORK=$(mktemp -d)
-N=800
+# 本数は LCPROBE_DYLIBS で変えられる。既定 100 は実機で LiveContainer の署名工程が
+# 耐えると確認できた本数(800 本は署名中にクラッシュした。tools/xios/G0-results.md)
+N=${LCPROBE_DYLIBS:-100}
 cat > "$WORK/gen.sh" <<EOF
 #!/bin/sh
 i=\$1
