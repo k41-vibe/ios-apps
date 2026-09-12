@@ -5,6 +5,13 @@
 
 ## [Unreleased]
 
+### Fixed
+- 経路変換層がホストの実パスまで書き換えていた。iosc には `XDG_RUNTIME_DIR` とソケットのパスを
+  アプリ内の実パスで渡すので、libwayland が開く `<XDG_RUNTIME_DIR>/wayland-0.lock` が
+  「/var/mobile → HOME」の規則に巻き込まれて存在しない場所に化け、`wl_display_add_socket` が
+  失敗していた(実機 2026-09-12。すぐ隣の ddx ソケットは bind を横取りしていないので成功していた)。
+  変換の先頭で「すでにホストのパス(tmp / home / bundle 配下)なら素通し」を判定する
+
 ## [0.2.0] - 2026-09-12
 
 ### Added
