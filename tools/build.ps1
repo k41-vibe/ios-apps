@@ -68,7 +68,10 @@ if ($Release) {
         # (以前 git add -A で、別作業中のエージェントが書いた途中のファイルを
         #  ビルドに載せかけた。何を積んだかは下に出す)
         Invoke-Git add "apps/$Name" tools docs .github
-        if (git diff --cached --quiet) {
+        # `git diff --cached --quiet` は出力を持たないので、if に直接書くと常に偽になる
+        # (2026-09-13: 何も無いのに commit しようとして落ちた)。終了コードで見る
+        & git.exe diff --cached --quiet
+        if ($LASTEXITCODE -eq 0) {
             Write-Host "commit するものなし (HEAD をビルドします)"
         } else {
             Write-Host "--- この commit に載るもの ---"
@@ -82,7 +85,16 @@ if ($Release) {
         }
         Invoke-Git push -q origin main
     }
-    gh workflow run build.yml -f app=$Name | Out-Null
+    # workflow_dispatch が落ちる(GitHub 側の 500、2026-09-13)ときは build/<Name> ブランチへの
+    # push で同じビルドを起動する(build.yml の push.branches)
+    $old = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    gh workflow run build.yml -f app=$Name 2>$null | Out-Null
+    $dispatched = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $old
+    if (-not $dispatched) {
+        Write-Host "workflow_dispatch が失敗したので build/$Name への push で起動します"
+        Invoke-Git push -q -f origin "HEAD:refs/heads/build/$Name"
+    }
 }
 
 $runId = Wait-NewRun $before
