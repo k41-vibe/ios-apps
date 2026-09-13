@@ -72,6 +72,11 @@
   窓の描画は `shm_open` なので無事だった。`mkstemp` / `mkostemp` / `mkstemps` / `mkostemps` /
   `mkdtemp` を横取りし、生成名を雛形へ写し戻す
 
+- **GTK アプリを閉じて開き直すと落ちる**(クラッシュレポート `LiveContainer-2026-09-14-014026.ips`、
+  同じ `editor_application_new` の NULL 参照)。2 回目の起動は私用コピー(静的状態が真っさら)で
+  main を走らせるので、GLib の型を二重登録して失敗する。GLib/GTK を読むプログラムは 2 回目以降も
+  最初の実体(登録済みの型 id を持つ)で main を呼び直す
+
 ### Fixed
 - **起動直後に落ちる**(開発ビルド 0.0.20260913、クラッシュレポート `LiveContainer-2026-09-13-020018.ips`)。
   初回起動で生成する gdk-pixbuf の `loaders.cache` に `""` の行を置いていたが、

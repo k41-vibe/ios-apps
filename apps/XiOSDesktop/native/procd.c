@@ -342,6 +342,29 @@ static void wm_raise_for(const char *guest)
     }
 }
 
+/* GLib/GTK を使うと分かったプログラムの台帳。GType の登録はプロセスで 1 回きりなので、
+ * 2 回目以降は私用コピー(統計が真っさら → 型を二重登録して落ちる)ではなく、
+ * 最初の実体(登録済みの型 id を持つ)で main を呼び直す。
+ * 実機 2026-09-14 01:40: エディタを閉じて開き直したら 5 本目のコピーで
+ * editor_application_new が NULL 参照。 */
+static int gobject_program_known(const char *guest, int remember)
+{
+    struct seen { char *path; struct seen *next; };
+    static struct seen *list;
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    struct seen *s;
+    int hit = 0;
+    pthread_mutex_lock(&lock);
+    for (s = list; s; s = s->next)
+        if (strcmp(s->path, guest) == 0) { hit = 1; break; }
+    if (!hit && remember && (s = (struct seen *)calloc(1, sizeof *s)) != NULL) {
+        s->path = strdup(guest);
+        if (s->path) { s->next = list; list = s; } else free(s);
+    }
+    pthread_mutex_unlock(&lock);
+    return hit;
+}
+
 /* 同じプログラムが単一実体として動いているか */
 static int single_instance_running(const char *guest)
 {
@@ -869,7 +892,9 @@ static int spawn_impl(const char *path, char *const argv[], char *const envp[], 
         }
     }
     first = first_spawn_of(guest);
-    if (!first && !getenv("LCSYS_NO_COPY")) {
+    if (!first && gobject_program_known(guest, 0)) {
+        lcsys_log("spawn %s: GLib/GTK のプログラムなので私用コピーは作らず最初の実体で main を呼び直す", guest);
+    } else if (!first && !getenv("LCSYS_NO_COPY")) {
         if (make_private_copy(image, priv, sizeof priv) == 0) {
             snprintf(image, sizeof image, "%s", priv);
             copied = 1;
@@ -921,6 +946,8 @@ static int spawn_impl(const char *path, char *const argv[], char *const envp[], 
     p->image_path = strdup(image);
     p->entry = entry;
     p->single_instance = image_uses_gobject(hdr);
+    if (p->single_instance)
+        gobject_program_known(guest, 1);
     if (!p->argv || !p->envp || !p->guest_path || !p->image_path || p->argc < 1) {
         free_proc(p);
         errno = EINVAL;
