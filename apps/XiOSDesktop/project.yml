@@ -24,6 +24,11 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        # アプリ内アップデート: PC の配布サーバー(http、LAN / Tailscale)から ipa を取る
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: 同じネットワークの PC から新しい版を取りに行くため
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.rutoi.xiosdesktop
