@@ -72,6 +72,34 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=os.path.abspath(ROOT), **kw)
 
+    def do_POST(self):
+        """/upload/<名前>: アプリからのログ受け取り。dist/reports/<時刻>-<名前> に保存する。
+        (Updater.swift の「ログを PC に送る」ボタン。Discord の Webhook は書く専用で受け取れない)"""
+        import datetime, re
+        if not self.path.startswith("/upload/"):
+            self.send_error(404)
+            return
+        name = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(self.path[len("/upload/"):]))[:80] or "report"
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0 or length > 64 * 1024 * 1024:
+            self.send_error(400, "bad length")
+            return
+        data = self.rfile.read(length)
+        outdir = os.path.join(os.path.abspath(ROOT), "reports")
+        os.makedirs(outdir, exist_ok=True)
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        path = os.path.join(outdir, f"{stamp}-{name}")
+        with open(path, "wb") as f:
+            f.write(data)
+        body = json.dumps({"saved": path, "bytes": len(data)}, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        if sys.stderr:
+            sys.stderr.write(f"  受信: {path} ({len(data)} B)\n")
+
     def do_GET(self):
         if self.path.endswith(".json"):
             ipa = os.path.join(os.path.abspath(ROOT), os.path.basename(self.path)[:-5] + ".ipa")

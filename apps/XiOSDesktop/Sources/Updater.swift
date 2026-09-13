@@ -212,6 +212,41 @@ final class Updater: ObservableObject {
         }
     }
 
+    // ------------------------------------------------------------ ログを PC へ
+
+    @Published var sendState = ""
+
+    /// xiosdesktop.log を配布サーバーの /upload/ に POST する(tools/serve-ipa.py do_POST)。
+    /// 届けば dist/reports/ に時刻付きで保存され、そのまま読める
+    func sendLog() async {
+        log.sync()
+        guard let data = try? Data(contentsOf: log.fileURL) else {
+            sendState = "ログが読めない"
+            return
+        }
+        var servers = [baseURL]
+        for s in Self.defaultServers where !servers.contains(s) { servers.append(s) }
+        for s in servers {
+            guard let url = URL(string: s + "/upload/xiosdesktop.log") else { continue }
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.timeoutInterval = 20
+            req.setValue("text/plain; charset=utf-8", forHTTPHeaderField: "Content-Type")
+            sendState = "送信中 \(data.count / 1024) KB"
+            do {
+                let (_, resp) = try await URLSession.shared.upload(for: req, from: data)
+                if (resp as? HTTPURLResponse)?.statusCode == 200 {
+                    sendState = "PC に届きました(\(data.count / 1024) KB)"
+                    log.log("ログ送信: \(s) に \(data.count) B")
+                    return
+                }
+            } catch {
+                log.log("ログ送信: \(s) に届かない(\(error.localizedDescription))")
+            }
+        }
+        sendState = "PC に届きません(配布サーバーが動いているか)"
+    }
+
     func quit() {
         log.sync()
         exit(0)
