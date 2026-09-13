@@ -11,8 +11,10 @@
    (権限が要るなら `info.properties` に `NSCameraUsageDescription` 等を足す)
 3. `.\tools\build.ps1 <Name>` — commit/push → workflow_dispatch → 完了待ち →
    `dist/<Name>.ipa` と `C:\Users\rutoi\SharedFolder\ios-apps\<Name>.ipa` に配置(開発ビルド、版 0.0.YYYYMMDD)
-4. 瑠人さんに「iPhone のファイルApp → SharedFolder/ios-apps/<Name>.ipa を共有 → LiveContainer」
-   と伝える。Syncthing(SyncTrayzor)が Windows 側で起動しているか先に確認する
+4. 瑠人さんに取り込み方を伝える。初回は `build.ps1` が出す URL(`tools/serve-ipa.py`、LAN / Tailscale)を
+   LiveContainer の + に貼る。**2 回目からはアプリ内の「更新」ボタン**で取り込める(XiOSDesktop は
+   `Sources/Updater.swift` で実装済み。他のアプリにも同じ仕組みを載せられる)。SharedFolder 経由は
+   Syncthing(SyncTrayzor)が Windows 側で動いているときだけ
 5. 実機で使ってもらう版は **リリース**として出す: `apps/<Name>/CHANGELOG.md` の `[Unreleased]` を書き、
    `.\tools\build.ps1 <Name> -Release X.Y.Z`。タグ `<name>-vX.Y.Z` push で CI が GitHub Release を発行する。
    版の決まり(kioku と同じ Semantic Versioning、ビルド番号 = run 番号、画面に `vX.Y.Z (build N) <commit>`)は
