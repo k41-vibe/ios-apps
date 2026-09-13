@@ -469,6 +469,25 @@ final class Runner {
     func logStatus() {
         log.log("状態: \(status())  [footprint \(footprintMB()) MB]")
         logDirs()
+        dumpShellLogs()
+    }
+
+    /// iosc-shell の部品は IOSC_SHELL_DEBUG=1 のとき $XDG_RUNTIME_DIR/<名前>.log に自前で書く
+    /// (ioscoverview.c:46)。ドックから起きたものは XDG_RUNTIME_DIR が共有バスの置き場に
+    /// 差し替わっている(sd_launch)ので、両方を見て末尾をこちらのログへ写す
+    func dumpShellLogs() {
+        for dir in [runtimeDir, tmp + "/iosc-shell-bus"] {
+            for name in ["ioscoverview.log", "ioscbar.log", "ioscdock.log", "ioscbg.log"] {
+                let path = dir + "/" + name
+                guard let text = try? String(contentsOfFile: path, encoding: .utf8), !text.isEmpty else { continue }
+                let lines = text.split(separator: "
+", omittingEmptySubsequences: false)
+                let tail = lines.suffix(40).joined(separator: "
+")
+                log.log("--- \(path) (末尾 \(min(40, lines.count)) / \(lines.count) 行) ---
+\(tail)")
+            }
+        }
     }
 
     /// いま生きているものの名前。

@@ -515,6 +515,9 @@ static void *guest_thread(void *arg)
     fflush(NULL);
     p->status = rc & 0xff;
     p->done = 1;
+    /* exit() 経由は lcsys_guest_exit が記録する。main から戻った場合もここで残す
+     * (ioscoverview は return 0 で終わるので、実機 2026-09-13 のログに終了が無かった) */
+    lcsys_log("pid %d: main returned %d -> thread ends", p->pid, rc);
     return NULL;
 }
 
