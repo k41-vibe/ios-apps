@@ -27,6 +27,14 @@
   (実機 2026-09-13: `hit_at … -> -1`)。横 852pt なら等倍近く。iosc は起動時の向きで論理サイズを
   決め、回転したら XIOS_IN_OUTPUT で作り直させて ddx に繋ぎ直す(xios_surface.c の世代管理どおり)
 
+- **ドックからのアプリ起動が dbus で止まる**(実機 2026-09-13 build 45)。(1) `waitpid` が exec の
+  肩代わりで pid が付け替わる前の「抜け殻」を掴んで早戻りし、iosc-shell が共有バスの socket を
+  見に行った時点でまだ無かった → 同じ pid を引き継いだ本体を待ち直す(procd.c collect_pid)。
+  (2) 落ち先の dbus-run-session が既定の `/var/jb/var/run/dbus` に bind して読み取り専用で失敗
+  → `/var/jb/var/run` を `<tmp>/run` に写す(pathmap.c)
+- fontconfig のキャッシュ置き場 `home/cache/fontconfig` を先に作る(無いと fc-cache が諦める)
+- 更新の既定サーバーを LAN 優先に(Tailscale の平文 http は ATS が拒む)
+
 ### Fixed
 - **起動直後に落ちる**(開発ビルド 0.0.20260913、クラッシュレポート `LiveContainer-2026-09-13-020018.ips`)。
   初回起動で生成する gdk-pixbuf の `loaders.cache` に `""` の行を置いていたが、

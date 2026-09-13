@@ -40,8 +40,11 @@ final class Updater: ObservableObject {
     }
     private var manifestBase: URL?
 
-    /// 既定は Tailscale(どこからでも届く)。LAN は UserDefaults で差し替えられる
-    static let defaultServers = ["http://100.111.178.20:8788", "http://192.168.10.113:8788"]
+    /// 既定は LAN。Tailscale の 100.x への平文 http は ATS(App Transport Security)が拒む
+    /// (実機 2026-09-13: "requires the use of a secure connection")。ATS は本体 LiveContainer の
+    /// Info.plist で決まるのでこちらでは緩められない。LAN は「ローカルネットワーク」の例外で通る。
+    /// Tailscale を使うなら `tailscale cert` の正規証明書で https にする(未着手)
+    static let defaultServers = ["http://192.168.10.113:8788", "http://100.111.178.20:8788"]
 
     let log: ConsoleLog
 

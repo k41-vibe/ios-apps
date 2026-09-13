@@ -179,6 +179,14 @@ char *lcsys_map_path(const char *in, char *out, size_t cap)
      * /var/jb より先に見ること。 */
     else if (prefix_match(p, "/var/jb/tmp", &rest) || prefix_match(p, "/var/jb/var/tmp", &rest))
         join2(out, cap, lcsys_cfg.tmp, rest);
+    /* /var/jb/var/run も書ける場所。dbus-daemon の既定の listen(session.conf の
+     * unix:tmpdir=/var/jb/var/run/dbus)がここに socket を作る。実機 2026-09-13 に
+     * 読み取り専用の jb 側へ落ちて bind が ENOENT になっていた。置き場は <tmp>/run */
+    else if (prefix_match(p, "/var/jb/var/run", &rest)) {
+        char runroot[LCSYS_PATH_MAX];
+        join2(runroot, sizeof runroot, lcsys_cfg.tmp, "/run");
+        join2(out, cap, runroot, rest);
+    }
     else if (prefix_match(p, "/var/jb", &rest))
         join2(out, cap, lcsys_cfg.jb, rest);
     else if (prefix_match(p, "/var/mobile", &rest) || prefix_match(p, "/var/root", &rest))

@@ -894,14 +894,34 @@ static void join_proc(struct lc_proc *p)
     }
 }
 
+/* pid の持ち主が終わるまで待って回収する。exec の肩代わり(lcsys_exec_handover)は
+ * 「子が exec した瞬間に pid を新しいプログラムへ付け替える」ので、待っている最中に
+ * 持ち主が変わりうる。抜け殻(元の子スレッド)が終わっただけなら、同じ pid を
+ * 引き継いだプログラムを待ち直す。実機 2026-09-13: iosc-shell が dbus-daemon を fork+exec
+ * して waitpid した直後に socket を見に行き、まだ無いので dbus-run-session に落ちていた。 */
+static struct lc_proc *collect_pid(int pid)
+{
+    struct lc_proc *p;
+    int st;
+    for (;;) {
+        p = unlink_proc(pid);
+        if (!p)
+            return NULL;
+        join_proc(p);
+        if (lcsys_alive(pid, &st) < 0)
+            return p;               /* 同じ pid の持ち主はもう居ない: これが本体 */
+        lcsys_log("pid %d: 抜け殻(%d)が終わったので、引き継いだ本体を待ち直す", pid, p->pid);
+        free_proc(p);
+    }
+}
+
 int lcsys_wait(int pid, int *status)
 {
-    struct lc_proc *p = unlink_proc(pid);
+    struct lc_proc *p = collect_pid(pid);
     if (!p) {
         errno = ECHILD;
         return -1;
     }
-    join_proc(p);
     if (status)
         *status = p->done ? p->status : -1;
     free_proc(p);
@@ -922,12 +942,11 @@ int lcsys_waitpid(int pid, int *status, int nohang)
         if (alive == 1)
             return 0;
     }
-    p = unlink_proc(pid);
+    p = collect_pid(pid);
     if (!p) {
         errno = ECHILD;
         return -1;
     }
-    join_proc(p);
     if (status)
         *status = p->done ? p->status : 0;
     free_proc(p);
