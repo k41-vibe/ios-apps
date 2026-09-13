@@ -61,6 +61,13 @@
   (gdkdisplay-wayland.c 4.14.5)。`~/.config/gtk-4.0/settings.ini` に `gtk-cursor-theme-name=Adwaita`
   を生成し、`XCURSOR_THEME=Adwaita` も置く
 
+- **指が窓に入ると GTK アプリが abort(続報、build 52 でも再現)**。真因は `mkstemp` 系を横取り
+  していなかったこと。GTK のカーソル読み込み(vendored os-compatibility.c)は
+  `$XDG_RUNTIME_DIR/wayland-cursor-shared-XXXXXX` を `mkostemp` で作るが、ドック経由のアプリの
+  XDG_RUNTIME_DIR は `/var/jb/tmp/iosc-shell-bus`(Linux 側の綴り)で ENOENT → テーマ無し → assert。
+  窓の描画は `shm_open` なので無事だった。`mkstemp` / `mkostemp` / `mkstemps` / `mkostemps` /
+  `mkdtemp` を横取りし、生成名を雛形へ写し戻す
+
 ### Fixed
 - **起動直後に落ちる**(開発ビルド 0.0.20260913、クラッシュレポート `LiveContainer-2026-09-13-020018.ips`)。
   初回起動で生成する gdk-pixbuf の `loaders.cache` に `""` の行を置いていたが、

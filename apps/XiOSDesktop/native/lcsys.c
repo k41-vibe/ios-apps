@@ -927,6 +927,64 @@ int rename(const char *from, const char *to)
     return lcsys_real.rename(MAPPED(from, a), MAPPED(to, b));
 }
 
+/* mkstemp 系: 雛形(末尾 XXXXXX)を書き換えて返す関数なので、写した経路で本物を呼び、
+ * 生成された名前を呼んだ側の雛形へ写し戻す(基底名の長さは変わらない)。
+ * GTK のカーソル読み込み(gdk/wayland/cursor/os-compatibility.c)は
+ * $XDG_RUNTIME_DIR/wayland-cursor-shared-XXXXXX を mkostemp で作る。ドックから起きた
+ * アプリの XDG_RUNTIME_DIR は /var/jb/tmp/iosc-shell-bus(Linux 側の綴り)なので、
+ * 横取り無しでは ENOENT → カーソルテーマ無し → ポインタが窓に入った瞬間に
+ * g_assert で abort していた(実機 2026-09-13 22:22)。 */
+static void copy_generated_name_back(char *tmpl, const char *made)
+{
+    const char *gb = strrchr(made, '/');
+    char *tb = strrchr(tmpl, '/');
+    gb = gb ? gb + 1 : made;
+    tb = tb ? tb + 1 : tmpl;
+    if (strlen(gb) == strlen(tb))
+        memcpy(tb, gb, strlen(gb));
+}
+
+int mkostemps(char *tmpl, int suffixlen, int oflag)
+{
+    static int (*real)(char *, int, int);
+    char buf[LCSYS_PATH_MAX];
+    const char *m;
+    int fd;
+    ENSURE();
+    if (!real)
+        real = (int (*)(char *, int, int))find_real("mkostemps");
+    if (!real) { errno = ENOSYS; return -1; }
+    m = MAPPED(tmpl, buf);
+    if (m == tmpl)
+        return real(tmpl, suffixlen, oflag);
+    fd = real(buf, suffixlen, oflag);
+    if (fd >= 0)
+        copy_generated_name_back(tmpl, buf);
+    return fd;
+}
+
+int mkostemp(char *tmpl, int oflag) { return mkostemps(tmpl, 0, oflag); }
+int mkstemps(char *tmpl, int suffixlen) { return mkostemps(tmpl, suffixlen, 0); }
+int mkstemp(char *tmpl) { return mkostemps(tmpl, 0, 0); }
+
+char *mkdtemp(char *tmpl)
+{
+    static char *(*real)(char *);
+    char buf[LCSYS_PATH_MAX];
+    const char *m;
+    ENSURE();
+    if (!real)
+        real = (char *(*)(char *))find_real("mkdtemp");
+    if (!real) { errno = ENOSYS; return NULL; }
+    m = MAPPED(tmpl, buf);
+    if (m == tmpl)
+        return real(tmpl);
+    if (!real(buf))
+        return NULL;
+    copy_generated_name_back(tmpl, buf);
+    return tmpl;
+}
+
 int chmod(const char *path, mode_t mode)
 {
     char buf[LCSYS_PATH_MAX];
