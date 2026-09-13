@@ -28,6 +28,16 @@
   がそのまま bind されていた。変換後が sun_path の 104 バイトを超えるとき(実機の $TMPDIR は
   88 文字)は `pthread_fchdir_np` でそのスレッドだけ親ディレクトリに移って相対名で開く
 
+- **ドックのアイコンをタップすると落ちる**(クラッシュレポート `LiveContainer-2026-09-13-142538.ips`)。
+  ドックは Exec を `sh -lc` で起こし、-l が読む /etc/profile.d/coreutils.sh の `$(dircolors -b)` で
+  dash が fork する。子は exec せず dash の続きを走るので、スタックを複製しただけの子と親が
+  同じ大域(メモリスタック、ジョブ表)を触り、親が SIGSEGV。対処は 2 段:
+  (1) `sh [-l] -c CMD` の CMD が語と引用符だけの単純な行なら dash を通さず直接 spawn する
+  (-l の効きは GSK_RENDERER=cairo で肩代わり)。複雑な行は -l だけ外して dash に渡す。
+  (2) シェル(sh/dash/bash)からの fork は -1 ENOMEM で断る。"Cannot fork" で止まるだけで
+  デスクトップは生き残る。**シェルスクリプトの `$(...)` とパイプはこの構成では動かない**
+  (子がシェルの続きを走る fork は、本物のプロセスが無いと再現できない)
+
 ### Removed
 - **`ios-inputd`**。iosc の classic セッションでは要らない: `iosc.c in_dispatch_text()` は
   代理が居なければ自分の text-input-v3 で今選ばれている窓に文字を入れる

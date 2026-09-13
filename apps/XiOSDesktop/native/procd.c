@@ -21,6 +21,7 @@
 #include "lcsys.h"
 
 #include <dlfcn.h>
+#include <crt_externs.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -517,7 +518,203 @@ static void *guest_thread(void *arg)
     return NULL;
 }
 
+
+/* ------------------------------------------------- sh -c の肩代わり
+ *
+ * iosc-shell のドックは .desktop の Exec を `sh -lc "<Exec>"` で起こす(shell-draw.h sd_launch)。
+ * -l は /etc/profile を読み、そこには `eval "$(dircolors -b)"` がある(profile.d/coreutils.sh)。
+ * $(...) は fork で、子はそのまま dash の続き(exec しない)を走る。ここでは fork の子はスレッド
+ * なので親子が同じ dash の大域(メモリスタック、ジョブ表)を同時に触り、親が落ちる
+ * (2026-09-13 のクラッシュレポート: expandarg → evalbackcmd の直後で SIGSEGV)。
+ *
+ * `sh -c "<Exec>"` は「このコマンド行を走らせろ」という OS への注文なので、行が語と引用符だけの
+ * 単純な形なら dash を通さず直接 spawn する。複雑な行は -l だけ落として dash に渡す
+ * (profile の効きは環境変数で肩代わり: GSK_RENDERER=cairo は profile.d/10-gtk-renderer.sh)。 */
+
+static const char *base_name(const char *p)
+{
+    const char *s = strrchr(p, '/');
+    return s ? s + 1 : p;
+}
+
+int lcsys_is_shell_program(const char *path)
+{
+    const char *b = path ? base_name(path) : "";
+    return !strcmp(b, "sh") || !strcmp(b, "dash") || !strcmp(b, "bash") || !strcmp(b, "ash");
+}
+
+const char *lcsys_guest_program(void)
+{
+    struct lc_proc *p;
+    pthread_once(&key_once, make_key);
+    p = (struct lc_proc *)pthread_getspecific(guest_key);
+    return p ? p->guest_path : NULL;
+}
+
+/* 語と引用符だけのコマンド行を argv に割る。シェルの記号が裸で出てきたら NULL */
+static char **split_simple_command(const char *cmd)
+{
+    char **argv = NULL, *word = NULL;
+    size_t argc = 0, wlen = 0, wcap = 0;
+    int in_word = 0, q = 0; /* q: 0 / '\'' / '"' */
+    const char *p;
+
+#define PUSH_CHAR(ch)                                                          \
+    do {                                                                       \
+        if (wlen + 1 >= wcap) {                                                \
+            char *nw = realloc(word, wcap = wcap ? wcap * 2 : 64);             \
+            if (!nw) goto fail;                                                \
+            word = nw;                                                         \
+        }                                                                      \
+        word[wlen++] = (char)(ch);                                             \
+        in_word = 1;                                                           \
+    } while (0)
+#define END_WORD()                                                             \
+    do {                                                                       \
+        if (in_word) {                                                         \
+            char **na = realloc(argv, (argc + 2) * sizeof *argv);              \
+            if (!na) goto fail;                                                \
+            argv = na;                                                         \
+            if (!word && !(word = calloc(1, wcap = 1))) goto fail;             \
+            word[wlen] = 0;                                                    \
+            argv[argc++] = word;                                               \
+            argv[argc] = NULL;                                                 \
+            word = NULL; wlen = wcap = 0; in_word = 0;                         \
+        }                                                                      \
+    } while (0)
+
+    for (p = cmd; *p; p++) {
+        char c = *p;
+        if (q == '\'') {
+            if (c == '\'') q = 0; else PUSH_CHAR(c);
+            continue;
+        }
+        if (q == '"') {
+            if (c == '"') { q = 0; continue; }
+            if (c == '$' || c == '`') goto fail;
+            if (c == '\\' && p[1] && strchr("\"\\$`", p[1])) { PUSH_CHAR(p[1]); p++; continue; }
+            PUSH_CHAR(c);
+            continue;
+        }
+        if (c == ' ' || c == '\t') { END_WORD(); continue; }
+        if (c == '\'' || c == '"') { q = c; in_word = 1; continue; }
+        if (c == '\\' && p[1]) { PUSH_CHAR(p[1]); p++; continue; }
+        if (strchr("$`|;&<>(){}*?[~\n", c) || (c == '#' && !in_word)) goto fail;
+        if (c == '=' && argc == 0) goto fail; /* 先頭語の代入 */
+        PUSH_CHAR(c);
+    }
+    if (q) goto fail;
+    END_WORD();
+    if (!argv || argc == 0) goto fail;
+    return argv;
+fail:
+    free(word);
+    free_vector(argv);
+    return NULL;
+#undef PUSH_CHAR
+#undef END_WORD
+}
+
+/* envp に KEY=VALUE を足す(同じ KEY は置き換える)。戻りは呼んだ側が free_vector する */
+static char **env_with(char *const envp[], const char *kv)
+{
+    char **out;
+    size_t n = 0, i, klen = strcspn(kv, "=") + 1;
+    int replaced = 0;
+    if (!envp)
+        envp = *_NSGetEnviron();
+    while (envp[n]) n++;
+    out = calloc(n + 2, sizeof *out);
+    if (!out)
+        return NULL;
+    for (i = 0; i < n; i++) {
+        if (!replaced && strncmp(envp[i], kv, klen) == 0) { out[i] = strdup(kv); replaced = 1; }
+        else out[i] = strdup(envp[i]);
+        if (!out[i]) { free_vector(out); return NULL; }
+    }
+    if (!replaced && !(out[n++] = strdup(kv))) { free_vector(out); return NULL; }
+    out[n] = NULL;
+    return out;
+}
+
+/* `sh [-l] -c CMD` を見つけたら 1 を返し、*argv_out / *envp_out に差し替え後を置く。
+ * 単純な行なら *argv_out[0] が新しい path。呼んだ側が両方を free_vector する */
+static int unwrap_shell_c(const char *path, char *const argv[], char *const envp[],
+                          char ***argv_out, char ***envp_out)
+{
+    const char *cmd = NULL;
+    int login = 0, ci = 0, i;
+    char **nargv;
+
+    *argv_out = NULL;
+    *envp_out = NULL;
+    if (!lcsys_is_shell_program(path) || !argv || !argv[0] || !argv[1])
+        return 0;
+    if (argv[1][0] == '-' && argv[1][1] && strspn(argv[1] + 1, "lc") == strlen(argv[1] + 1)
+        && strchr(argv[1], 'c')) {
+        login = strchr(argv[1], 'l') != NULL;
+        ci = 1;
+    } else if (!strcmp(argv[1], "-l") && argv[2] && !strcmp(argv[2], "-c")) {
+        login = 1;
+        ci = 2;
+    } else {
+        return 0;
+    }
+    cmd = argv[ci + 1];
+    if (!cmd)
+        return 0;
+    while (*cmd == ' ') cmd++;
+    if (!strncmp(cmd, "exec ", 5))
+        cmd += 5;
+
+    if (login && !(*envp_out = env_with(envp, "GSK_RENDERER=cairo")))
+        return 0;
+
+    nargv = split_simple_command(cmd);
+    if (nargv) {
+        lcsys_log("sh -%sc \"%s\": 単純な行なので dash を通さず %s を直接起こす", login ? "l" : "", cmd, nargv[0]);
+        *argv_out = nargv;
+        return 1;
+    }
+    if (!login) {
+        free_vector(*envp_out);
+        *envp_out = NULL;
+        return 0;
+    }
+    /* 複雑な行: -l だけ落とす(/etc/profile の $(...) が fork で落ちるため) */
+    for (i = 0; argv[i]; i++) ;
+    nargv = calloc(i + 2, sizeof *nargv);
+    if (!nargv) { free_vector(*envp_out); *envp_out = NULL; return 0; }
+    nargv[0] = strdup(argv[0]);
+    nargv[1] = strdup("-c");
+    for (i = ci + 1; argv[i]; i++)
+        nargv[i - ci + 1] = strdup(argv[i]);
+    lcsys_log("sh -lc \"%s\": 複雑な行なので -l を外して dash に渡す", cmd);
+    *argv_out = nargv;
+    return 1;
+}
+
+static int spawn_impl(const char *path, char *const argv[], char *const envp[], int fd_out, int fd_err);
+
 int lcsys_spawn(const char *path, char *const argv[], char *const envp[], int fd_out, int fd_err)
+{
+    char **nargv = NULL, **nenvp = NULL;
+    int rc, saved;
+    if (unwrap_shell_c(path, argv, envp, &nargv, &nenvp)) {
+        /* 単純な行なら nargv[0] が新しいプログラム。-l を外しただけなら path はそのまま */
+        const char *npath = nargv[1] && !strcmp(nargv[1], "-c") ? path : nargv[0];
+        rc = spawn_impl(npath, nargv, nenvp ? nenvp : envp, fd_out, fd_err);
+    } else {
+        rc = spawn_impl(path, argv, envp, fd_out, fd_err);
+    }
+    saved = errno;
+    free_vector(nargv);
+    free_vector(nenvp);
+    errno = saved;
+    return rc;
+}
+
+static int spawn_impl(const char *path, char *const argv[], char *const envp[], int fd_out, int fd_err)
 {
     char guest[LCSYS_PATH_MAX], image[LCSYS_PATH_MAX], priv[LCSYS_PATH_MAX];
     const struct mach_header_64 *hdr;
