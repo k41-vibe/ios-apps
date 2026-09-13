@@ -18,6 +18,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -65,6 +66,7 @@ struct xi_conn {
     pthread_t reaper;
     volatile int closing;
     unsigned long sent;
+    unsigned long dropped;   /* 詰まって捨てた移動の数 */
     /* サーバーから来る TRAITS(code=content_hint, state=content_purpose, mods=enabled)。
      * 「文字を受け取る欄が選ばれた/外れた」の合図で、表示側がこれでキーボードを出し入れする
      * (osk-plan.md)。同じ値の再送も 1 件と数える: 同じ欄の中で入力が続いている合図で、
@@ -159,6 +161,24 @@ static int send_msg(struct xi_conn *c, uint32_t type, int32_t x, int32_t y, int3
     m.c = code;
     m.d = mods;
     pthread_mutex_lock(&c->lock);
+    /* 主スレッド(タッチ処理と描画が同居)を書き込みで止めない。iosc が忙しくてソケットの
+     * 送信バッファが埋まっているときは、MOTION と TOUCH の移動は捨てる(次の位置で
+     * 上書きされる情報)。押下・離す・文字は 100ms まで待つ。
+     * 実機 2026-09-14: Gears 描画中に指を動かすと画面ごと止まって見えた疑い。 */
+    {
+        struct pollfd pfd = { .fd = c->fd, .events = POLLOUT };
+        int coalescable = (type == XI_MSG_MOTION) || (type == XI_MSG_TOUCH && state == 2);
+        if (poll(&pfd, 1, 0) <= 0 || !(pfd.revents & POLLOUT)) {
+            if (coalescable) {
+                c->dropped++;
+                if (c->dropped == 1 || c->dropped % 200 == 0)
+                    lcsys_log("xinput: 送信バッファが詰まっているので移動を捨てた(累計 %lu)", c->dropped);
+                pthread_mutex_unlock(&c->lock);
+                return 0;
+            }
+            (void)poll(&pfd, 1, 100);
+        }
+    }
     rc = write_all(c->fd, &m, sizeof m);
     if (rc == 0 && paylen)
         rc = write_all(c->fd, payload, paylen);
@@ -205,7 +225,9 @@ void *xi_connect(const char *path)
     /* 相手が閉じた口に書いてもアプリごと落ちないように(IoscInput.c:35-38 と同じ) */
     {
         int on = 1;
+        int snd = 256 * 1024;   /* 指の移動の突発をここで吸収する(既定の 8KB では 256 件で埋まる) */
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof on);
+        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &snd, sizeof snd);
     }
 
     c = calloc(1, sizeof *c);
