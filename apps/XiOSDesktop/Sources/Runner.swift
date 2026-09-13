@@ -308,7 +308,9 @@ final class Runner {
         }
         if !fm.fileExists(atPath: cacheDir + "/fontconfig") {
             log.log("初回: フォントのキャッシュを作る(fontconfig の postinst 相当)")
-            _ = run(["/var/jb/usr/bin/fc-cache", "-f"])
+            // -v: 実機 2026-09-13 で全ディレクトリが "failed to write cache" になった。
+            // どの cachedir に書こうとして何で失敗したかをログに残す
+            _ = run(["/var/jb/usr/bin/fc-cache", "-fv"])
         }
     }
 

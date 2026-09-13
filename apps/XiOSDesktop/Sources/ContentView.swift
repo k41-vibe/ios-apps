@@ -10,7 +10,14 @@ struct ContentView: View {
     }
 
     @StateObject private var log = ConsoleLog()
+    @StateObject private var updater: Updater
     @State private var runner: Runner?
+    init() {
+        let l = ConsoleLog()
+        _log = StateObject(wrappedValue: l)
+        _updater = StateObject(wrappedValue: Updater(log: l))
+    }
+
     @State private var busy = false
     @State private var command = "/var/jb/usr/bin/ls -la /var/jb/usr/share"
     @State private var started = false
@@ -54,6 +61,8 @@ struct ContentView: View {
         .onAppear {
             guard !started else { return }
             started = true
+            Updater.cleanup()
+            Task { await updater.check() }
             let prev = log.previous()
             log.log("XiOSDesktop \(AppVersion.string)")
             log.log(Runner.measureScreen())
@@ -66,6 +75,28 @@ struct ContentView: View {
         VStack(spacing: 8) {
             Text("XiOSDesktop").font(.title2.bold())
             Text(AppVersion.string).font(.footnote.monospaced()).foregroundStyle(.secondary)
+            // アップデート(Updater.swift)。PC の配布サーバーから ipa を取って自分を入れ替える
+            HStack(spacing: 8) {
+                switch updater.phase {
+                case .idle, .checking:
+                    ProgressView().controlSize(.small)
+                    Text(updater.message.isEmpty ? "更新を確認中" : updater.message).font(.footnote)
+                case .available:
+                    Button("build \(updater.manifest?.build ?? 0) に更新") { Task { await updater.update() } }
+                        .buttonStyle(.borderedProminent).disabled(busy || opening)
+                    Text(updater.manifest.map { "\($0.version) \($0.commit)" } ?? "").font(.footnote)
+                case .downloading, .installing:
+                    ProgressView(value: updater.progress).frame(maxWidth: 120)
+                    Text(updater.message).font(.footnote).lineLimit(2)
+                case .done:
+                    Button("終了して開き直す") { updater.quit() }.buttonStyle(.borderedProminent)
+                    Text(updater.message).font(.footnote).lineLimit(3)
+                case .upToDate, .failed:
+                    Button("更新を確認") { Task { await updater.check() } }.buttonStyle(.bordered)
+                    Text(updater.message).font(.footnote).lineLimit(2)
+                }
+                Spacer()
+            }
             HStack {
                 TextField("command line", text: $command)
                     .textFieldStyle(.roundedBorder)

@@ -9,7 +9,10 @@ LiveContainer は URL からの取り込みができるので、Syncthing もフ
 止めるときは Ctrl+C。
 """
 import http.server
+import json
 import os
+import plistlib
+import zipfile
 import socket
 import subprocess
 import sys
@@ -38,9 +41,52 @@ def addresses():
     return out
 
 
+_manifest_cache = {}
+
+
+def manifest_for(ipa_path):
+    """<Name>.json: アプリ内アップデート(apps/*/Sources/Updater.swift)が読む版の情報。
+    ipa の Info.plist から取るので、build.ps1 が置いた ipa と常に一致する。"""
+    st = os.stat(ipa_path)
+    key = (ipa_path, st.st_mtime, st.st_size)
+    if key in _manifest_cache:
+        return _manifest_cache[key]
+    with zipfile.ZipFile(ipa_path) as z:
+        info_name = next(n for n in z.namelist()
+                         if n.startswith("Payload/") and n.count("/") == 2 and n.endswith("/Info.plist"))
+        info = plistlib.loads(z.read(info_name))
+    m = {
+        "app": os.path.splitext(os.path.basename(ipa_path))[0],
+        "version": info.get("CFBundleShortVersionString", "?"),
+        "build": int(info.get("CFBundleVersion", "0") or 0),
+        "commit": info.get("LCGitCommit", "?"),
+        "size": st.st_size,
+        "ipa": os.path.basename(ipa_path),
+    }
+    _manifest_cache.clear()
+    _manifest_cache[key] = m
+    return m
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=os.path.abspath(ROOT), **kw)
+
+    def do_GET(self):
+        if self.path.endswith(".json"):
+            ipa = os.path.join(os.path.abspath(ROOT), os.path.basename(self.path)[:-5] + ".ipa")
+            if not os.path.isfile(ipa):
+                self.send_error(404, "no ipa for manifest")
+                return
+            body = json.dumps(manifest_for(ipa), ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
 
     def end_headers(self):
         # LiveContainer に ipa だと分かるように。既定だと octet-stream になる
@@ -67,7 +113,7 @@ def main():
     for label, ip in addresses():
         print(f"{label}: http://{ip}:{port}/XiOSDesktop.ipa")
     print()
-    print("LiveContainer の + から URL を貼る。止めるときは Ctrl+C")
+    print("初回は LiveContainer の + から URL を貼る。2 回目からはアプリ内の「更新」で取り込める。止めるときは Ctrl+C")
     http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
     return 0
 

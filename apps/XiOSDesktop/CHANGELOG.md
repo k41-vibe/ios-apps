@@ -10,6 +10,14 @@
 
 `docs/review-2026-09-13.md`(xiOS のソースと設計文書との照合)に基づく一括の見直し。
 
+### Added
+- **アプリ内アップデート**(`Sources/Updater.swift`)。起動時に PC の配布サーバー
+  (`tools/serve-ipa.py` の `/XiOSDesktop.json`)を見て、新しい build があれば 1 タップで
+  ipa を取り、自分の .app を入れ替え、LiveContainer の台帳 `LCAppInfo.plist` の
+  `LCPatchRevision` を 0 に戻す。次に LiveContainer から開くと加工と署名が自動で走る
+  (LiveContainer 3.7.2 `LCAppModel.runApp` → `patchExecAndSignIfNeed`)。zip は自前で読む
+  (中央ディレクトリ + Compression の生 deflate)
+
 ### Fixed
 - **起動直後に落ちる**(開発ビルド 0.0.20260913、クラッシュレポート `LiveContainer-2026-09-13-020018.ips`)。
   初回起動で生成する gdk-pixbuf の `loaders.cache` に `""` の行を置いていたが、
