@@ -6,6 +6,9 @@ on:
     inputs:
       app:
         description: "apps/ 配下のアプリ名 (空なら全部)"
+        # type を明示する。2026-09-13 に型なしのまま入力付きで dispatch すると GitHub が 500 を返した
+        # (存在しない入力名は 422 で弾かれ、型ありの kioku は通った)
+        type: string
         required: false
         default: ""
   # リリース: <app小文字>-vX.Y.Z のタグ push で、そのアプリだけ建てて GitHub Release を発行(docs/VERSIONING.md)
