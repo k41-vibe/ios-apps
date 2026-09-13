@@ -181,6 +181,24 @@ if (-not $sync) {
 Write-Host "iPhone: LiveContainer の + に URL を貼る:"
 foreach ($u in $urls) { Write-Host "  $u" }
 
+# ---- Discord 通知(任意) ---------------------------------------------------
+# tools/discord-webhook.txt(git 管理外)に Webhook URL があれば、出来上がりを知らせる。
+# 版・ビルド番号は配布サーバーの manifest(ipa の Info.plist から生成)を読む
+$hook = Join-Path $root 'tools\discord-webhook.txt'
+if (Test-Path $hook) {
+    try {
+        $m = Invoke-RestMethod -UseBasicParsing -TimeoutSec 5 "http://127.0.0.1:$port/$Name.json"
+        $text = "$Name build $($m.build) ($($m.version) $($m.commit)) が配布サーバーに載りました。アプリの「更新」から取り込めます"
+        if ($tag) { $text = "$Name v$Release (build $($m.build)) をリリースしました。アプリの「更新」から取り込めます" }
+        $body = [Text.Encoding]::UTF8.GetBytes((@{ content = $text } | ConvertTo-Json -Compress))
+        Invoke-RestMethod -UseBasicParsing -Method Post -Uri (Get-Content $hook -Raw).Trim() `
+            -ContentType 'application/json; charset=utf-8' -Body $body | Out-Null
+        Write-Host "Discord に通知しました"
+    } catch {
+        Write-Host "Discord 通知に失敗: $($_.Exception.Message)"
+    }
+}
+
 if ($tag) {
     # kioku と同じ 1 版 = 1 リリース(タグ <app>-vX.Y.Z、資産は <App>.ipa 固定)
     $url = gh release view $tag --json url --jq .url 2>$null

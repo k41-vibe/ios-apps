@@ -15,6 +15,8 @@
    LiveContainer の + に貼る。**2 回目からはアプリ内の「更新」ボタン**で取り込める(XiOSDesktop は
    `Sources/Updater.swift` で実装済み。他のアプリにも同じ仕組みを載せられる)。SharedFolder 経由は
    Syncthing(SyncTrayzor)が Windows 側で動いているときだけ
+   出来上がりは Discord の Webhook(`tools/discord-webhook.txt`、git 管理外)に自動通知する。
+   瑠人さんからのログ・クラッシュレポートは Telegram 経由で `Downloads/Telegram Desktop/` に落ちる
 5. 実機で使ってもらう版は **リリース**として出す: `apps/<Name>/CHANGELOG.md` の `[Unreleased]` を書き、
    `.\tools\build.ps1 <Name> -Release X.Y.Z`。タグ `<name>-vX.Y.Z` push で CI が GitHub Release を発行する。
    版の決まり(kioku と同じ Semantic Versioning、ビルド番号 = run 番号、画面に `vX.Y.Z (build N) <commit>`)は
