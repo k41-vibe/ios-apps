@@ -18,6 +18,10 @@
   (LiveContainer 3.7.2 `LCAppModel.runApp` → `patchExecAndSignIfNeed`)。zip は自前で読む
   (中央ディレクトリ + Compression の生 deflate)
 
+- 診断: main から戻ったゲストも `pid N: main returned` を記録する(ioscoverview は return 0 で
+  終わるので終了が見えなかった)。「状態」ボタンで iosc-shell 部品の自前ログ
+  (`$XDG_RUNTIME_DIR/ioscoverview.log` 等)の末尾をこちらのログへ写す
+
 ### Fixed
 - **起動直後に落ちる**(開発ビルド 0.0.20260913、クラッシュレポート `LiveContainer-2026-09-13-020018.ips`)。
   初回起動で生成する gdk-pixbuf の `loaders.cache` に `""` の行を置いていたが、
