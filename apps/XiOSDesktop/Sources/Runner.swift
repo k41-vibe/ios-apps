@@ -270,7 +270,8 @@ final class Runner {
 
     private func firstLaunchSetup() {
         let fm = FileManager.default
-        try? fm.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
+        // fontconfig は cachedir が無いと作らずに諦める(実機 2026-09-13: "not cleaning non-existent cache directory")
+        try? fm.createDirectory(atPath: cacheDir + "/fontconfig", withIntermediateDirectories: true)
 
         // gdk-pixbuf: 積んでいるローダーは SVG の 1 本だけ(PNG/JPEG は本体に内蔵)。
         // 形式は gdk-pixbuf-query-loaders の出力そのもので、モジュールの場所はゲストの
@@ -327,7 +328,8 @@ final class Runner {
         lock.lock(); defer { lock.unlock() }
         if ready { return true }
         let bundle = Bundle.main.bundlePath
-        for d in [home, runtimeDir, xiosDir] {
+        // tmp/run/dbus: /var/jb/var/run の写し先(pathmap.c)。dbus-daemon は socket を作るだけで dir は作らない
+        for d in [home, runtimeDir, xiosDir, tmp + "/run/dbus"] {
             try? FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
         }
         // 前回終了したときのソケットとロックが残っている。中身は死んでいるのに
