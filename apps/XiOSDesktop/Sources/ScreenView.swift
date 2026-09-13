@@ -411,22 +411,128 @@ final class ScreenClient: NSObject, MTKViewDelegate {
         return (Int32(fx), Int32(fy))
     }
 
-    /// 最初の指はポインタも同送する(iosc の窓の移動・リサイズは MOTION でしか進まない:
-    /// wayland_iosc.c interactive_update は handle_motion から、interactive_end は
-    /// ボタン release から)。押下(press)は送らない: 送るとタップが GTK に 2 回届き、
-    /// ioscdock の「touch up から 450ms の抑制」(pt_button)にも掛からない。
-    /// 離したときに release だけ送れば interactive_end が走り、押していないボタンの
-    /// release はどのクライアントも無視する
-    private var pointerSlot: Int32?
-    static var pointerEmulation = true
+    // ---------------------------------------------------------------- 指の扱い
+    //
+    // 本家 Xios アプリ(XScreen.swift touchesBegan/Moved/Ended、classic iosc セッション)と同じ:
+    //   指 1 本 = ポインタ。押下は遅らせる(静止した長押し 0.55 秒は右クリック、動いたら
+    //            起点で左押下、静止タップは離した時に押下+解放)。TOUCH は送らない
+    //   指 2 本以上 = 全部 TOUCH(ピンチ等)。保留中のポインタ押下は捨てる
+    // iosc の窓の移動・リサイズ(interactive_update)はポインタでしか進まず、GTK も iosc 上では
+    // この経路で検証済み(docs/handoff/xios-app.md、gnome-touch-ux.md)。
+    // ボタン番号は X 流(1=左 2=中 3=右、iosc handle_button)。
+    private enum FingerMode { case idle, pointer, touch }
+    private var fingerMode: FingerMode = .idle
+    private var pendingPress: (fb: (Int32, Int32), view: CGPoint)?
+    private var pressSent = false
+    private var longPressFired = false
+    private var longPressWork: DispatchWorkItem?
+    private var lastPointerPt: (Int32, Int32)?
+    static let longPressSeconds = 0.55
+    static let longPressSlopPt: CGFloat = 12
+    /// 切ると従来どおり全部 TOUCH(比較用)
+    static var singleFingerIsPointer = true
+
+    private func cancelLongPress() { longPressWork?.cancel(); longPressWork = nil }
+
+    private func fireLongPress() {
+        guard let conn = inputConn, let xin = xin, let p = pendingPress, fingerMode == .pointer else { return }
+        pendingPress = nil
+        longPressFired = true
+        _ = xin.motion(conn, p.fb.0, p.fb.1)
+        _ = xin.button(conn, p.fb.0, p.fb.1, 3, 1)
+        _ = xin.button(conn, p.fb.0, p.fb.1, 3, 0)
+        log.log("入力: 長押し → 右クリック (\(p.fb.0),\(p.fb.1))")
+    }
+
+    /// 保留していた左押下を起点で出す(動き始めた、または静止タップの確定)
+    private func flushPendingPress() {
+        guard let conn = inputConn, let xin = xin, let p = pendingPress else { return }
+        pendingPress = nil
+        cancelLongPress()
+        _ = xin.motion(conn, p.fb.0, p.fb.1)
+        _ = xin.button(conn, p.fb.0, p.fb.1, 1, 1)
+        pressSent = true
+        lastPointerPt = p.fb
+    }
+
+    private func endPointer() {
+        guard let conn = inputConn, let xin = xin else { return }
+        cancelLongPress()
+        if longPressFired {
+            longPressFired = false
+        } else if pendingPress != nil {
+            flushPendingPress()                              // 静止タップ = クリック
+            if let p = lastPointerPt { _ = xin.button(conn, p.0, p.1, 1, 0) }
+        } else if pressSent, let p = lastPointerPt {
+            _ = xin.button(conn, p.0, p.1, 1, 0)             // ドラッグの終わり(interactive_end)
+        }
+        pressSent = false
+        pendingPress = nil
+        fingerMode = .idle
+    }
 
     /// phase: 0=離 1=触 2=移動 3=取消(第 6 節)
-    func send(touches: Set<UITouch>, phase: Int32, in view: MTKView) {
+    func send(touches: Set<UITouch>, phase: Int32, in view: MTKView, event: UIEvent?) {
+        guard let conn = inputConn, let xin = xin else { return }
+        let all = event?.allTouches ?? touches
+        let total = all.count
+        guard Self.singleFingerIsPointer else {
+            sendTouch(touches, phase: phase, view: view, newOnly: false)
+            return
+        }
+        if fingerMode == .idle && phase == 1 { fingerMode = total >= 2 ? .touch : .pointer }
+        switch fingerMode {
+        case .pointer:
+            if total >= 2 {
+                // 2 本目が来た: クリックにはしない。ここからは全部 TOUCH
+                cancelLongPress(); pendingPress = nil; longPressFired = false
+                if pressSent, let p = lastPointerPt { _ = xin.button(conn, p.0, p.1, 1, 0) }
+                pressSent = false
+                fingerMode = .touch
+                sendTouch(all, phase: 1, view: view, newOnly: true)   // まだスロットの無い指を触り始めとして送る
+                return
+            }
+            guard let t = touches.first, let (x, y) = fbPoint(t.location(in: view), in: view) else {
+                if phase == 0 || phase == 3 { endPointer() }
+                return
+            }
+            switch phase {
+            case 1:
+                pendingPress = ((x, y), t.location(in: view)); pressSent = false; longPressFired = false
+                lastPointerPt = (x, y)
+                cancelLongPress()
+                let w = DispatchWorkItem { [weak self] in self?.fireLongPress() }
+                longPressWork = w
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.longPressSeconds, execute: w)
+            case 2:
+                if longPressFired { return }
+                if let p = pendingPress {
+                    let l = t.location(in: view)
+                    if hypot(l.x - p.view.x, l.y - p.view.y) < Self.longPressSlopPt { return }
+                    flushPendingPress()
+                }
+                lastPointerPt = (x, y)
+                _ = xin.motion(conn, x, y)
+            default:
+                if pressSent { lastPointerPt = (x, y) }
+                endPointer()
+            }
+        case .touch:
+            sendTouch(touches, phase: phase, view: view, newOnly: false)
+            if (phase == 0 || phase == 3) && slots.isEmpty { fingerMode = .idle }
+        case .idle:
+            break   // 触り始めを見ていない指(ポインタ経路の終了後など)は無視
+        }
+    }
+
+    /// TOUCH 記録を送る(2 本以上の指)。newOnly: スロットを持たない指だけ送る
+    private func sendTouch(_ touches: Set<UITouch>, phase: Int32, view: MTKView, newOnly: Bool) {
         guard let conn = inputConn, let xin = xin else { return }
         for t in touches {
             let key = ObjectIdentifier(t)
             let slot: Int32
             if let s = slots[key] {
+                if newOnly { continue }
                 slot = s
             } else if phase == 1 {
                 let used = Set(slots.values)
@@ -437,17 +543,7 @@ final class ScreenClient: NSObject, MTKViewDelegate {
                 continue   // 触り始めを見ていない指は無視する
             }
             if let (x, y) = fbPoint(t.location(in: view), in: view) {
-                let emulate = Self.pointerEmulation && (pointerSlot == nil || pointerSlot == slot)
-                if emulate && phase == 1 {
-                    pointerSlot = slot
-                    _ = xin.motion(conn, x, y)      // g_cursor を指に置いてから触る(移動の起点になる)
-                }
                 _ = xin.touch(conn, x, y, slot, phase)
-                if emulate && phase == 2 { _ = xin.motion(conn, x, y) }
-                if emulate && (phase == 0 || phase == 3) {
-                    _ = xin.button(conn, x, y, 0x110, 0)   // BTN_LEFT release だけ: interactive_end
-                    pointerSlot = nil
-                }
                 touchesSent += 1
                 if touchesSent <= 3 || touchesSent % 200 == 0 {
                     log.log("入力: touch slot=\(slot) phase=\(phase) (\(x),\(y)) 累計 \(touchesSent)")
@@ -715,16 +811,16 @@ final class ScreenMTKView: MTKView, UIKeyInput {
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        client?.send(touches: touches, phase: 1, in: self)
+        client?.send(touches: touches, phase: 1, in: self, event: event)
     }
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        client?.send(touches: touches, phase: 2, in: self)
+        client?.send(touches: touches, phase: 2, in: self, event: event)
     }
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        client?.send(touches: touches, phase: 0, in: self)
+        client?.send(touches: touches, phase: 0, in: self, event: event)
     }
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        client?.send(touches: touches, phase: 3, in: self)
+        client?.send(touches: touches, phase: 3, in: self, event: event)
     }
 }
 

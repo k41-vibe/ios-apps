@@ -255,6 +255,7 @@ final class Runner {
             // /usr/share/applications を足す)。xiOS の deb には GUI アプリの .desktop がほぼ無く
             // (実機 2026-09-13: foot 系 3 件だけ)、テキストエディタが一覧に出なかった
             "IOSC_APPS_DIR": appsDir,
+            "IOSC_WM_SOCK": xiosDir + "/wm",     // procd が「2 回目のタップ = 既存の窓を前へ」に使う
             "SHELL": "/var/jb/usr/bin/bash",
             "USER": "mobile",
         ]
