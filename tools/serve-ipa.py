@@ -95,7 +95,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().end_headers()
 
     def log_message(self, fmt, *args):
-        sys.stderr.write("  %s\n" % (fmt % args))
+        # pythonw.exe(build.ps1 が隠し起動に使う)では sys.stderr が None。ここで落ちると
+        # 要求ごとにスレッドが死んで接続が切れる(2026-09-13 に発覚)
+        if sys.stderr:
+            sys.stderr.write("  %s\n" % (fmt % args))
 
 
 def main():
