@@ -432,12 +432,14 @@ final class ScreenClient: NSObject, MTKViewDelegate {
         guard let conn = conn, !disconnected else { return }
         serviceTraits()
         // 表示の時計をコンポジタに渡す(XIOS_MSG_PACING)。iosc はこれで
-        // pacing=event-loop から vblank に切り替わる(xios-app.md)。位相は分からないので
-        // 「次の垂直同期までおよそ半周期」として送る。60 フレームに 1 回で足りる
-        if frames % 60 == 0 {
+        // pacing=event-loop から vblank に切り替わる。記録は 250 ms で古くなる
+        // (xios_surface.c XIOS_VBLANK_STALE_MS)ので毎フレーム送る。a は「送った時点から
+        // 次の垂直同期までの µs」: draw は垂直同期で呼ばれるので、次までは 1 周期
+        // (実機 2026-09-13: 60 フレームに 1 回 + 半周期では 1 秒ごとに event-loop へ落ちていた)
+        do {
             let fps = max(view.preferredFramesPerSecond, 1)
             let interval = UInt32(1_000_000 / fps)
-            _ = api.pacing(conn, Int32(interval / 2), interval, 30_000, Int32(fps) * 1000)
+            _ = api.pacing(conn, Int32(interval), interval, 30_000, Int32(fps) * 1000)
         }
 
         // 1 回の draw で溜まっている DIRTY を全部引き取る。描くのは一番新しい 1 枚だけ

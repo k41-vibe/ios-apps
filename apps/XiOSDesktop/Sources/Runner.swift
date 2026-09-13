@@ -212,7 +212,9 @@ final class Runner {
             // XDG_RUNTIME_DIR を共有バスの置き場へ差し替えても(sd_launch)、
             // クライアントはコンポジタを見失わない。iosc 自身は -s wayland-0 で作る
             "WAYLAND_DISPLAY": runtimeDir + "/wayland-0",
-            "IOSC_DEBUG": "1",
+            // IOSC_DEBUG は「毎フレーム GPU から画素を読み戻して検証する」モード
+            // (wayland_iosc.c:1924、同期の GPU→CPU 読み戻し)。実機で「重い」の原因なので切る。
+            // 起動時の要点(listening / globals)は IOSC_DEBUG 無しでも出る
             "IOSC_SHELL_DEBUG": "1",             // run-shell.sh の既定。タッチの当たり判定を記録する
             "IOSC_PANEL_SCALE": "2",             // iosc の -scale と同じ(帯の描画倍率)
             // 経路変換の 1 件ずつの記録。毎秒数千行出るので既定は切る(「詳細ログ」で入れる)
