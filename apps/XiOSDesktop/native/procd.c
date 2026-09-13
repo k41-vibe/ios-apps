@@ -20,11 +20,14 @@
  */
 #include "lcsys.h"
 
+#include <dirent.h>
 #include <dlfcn.h>
 #include <crt_externs.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <limits.h>
 #include <mach-o/dyld.h>
 #include <mach-o/loader.h>
@@ -269,6 +272,74 @@ static int image_uses_gobject(const struct mach_header_64 *hdr)
         lc = (const struct load_command *)((const char *)lc + lc->cmdsize);
     }
     return 0;
+}
+
+/* 2 回目のタップ = 既存の窓を前へ(docs/iosc-desktop-env.md §7)。iosc の wm ソケットに
+ * `raise<TAB><app_id>` を書く。app_id は .desktop の基底名(GTK は application-id を
+ * app_id として名乗り、両者は一致する)。IOSC_APPS_DIR の .desktop から Exec の先頭語が
+ * このプログラムのものを探す。 */
+static const char *base_name(const char *p);   /* 後ろの sh -c の節で定義 */
+
+static void wm_raise_for(const char *guest)
+{
+    const char *dir = getenv("IOSC_APPS_DIR"), *sock = getenv("IOSC_WM_SOCK");
+    const char *prog = base_name(guest);
+    char app_id[256] = "";
+    DIR *d;
+    struct dirent *e;
+    if (!dir || !sock)
+        return;
+    d = opendir(dir);
+    if (!d)
+        return;
+    while (!app_id[0] && (e = readdir(d)) != NULL) {
+        char path[LCSYS_PATH_MAX], line[512];
+        size_t n = strlen(e->d_name);
+        FILE *f;
+        if (n < 9 || strcmp(e->d_name + n - 8, ".desktop") != 0)
+            continue;
+        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+        f = fopen(path, "r");
+        if (!f)
+            continue;
+        while (fgets(line, sizeof line, f)) {
+            if (strncmp(line, "Exec=", 5) == 0) {
+                char *w = line + 5, *sp = strpbrk(w, " \t\r\n");
+                if (sp) *sp = 0;
+                if (strcmp(base_name(w), prog) == 0)
+                    snprintf(app_id, sizeof app_id, "%.*s", (int)(n - 8), e->d_name);
+                break;
+            }
+        }
+        fclose(f);
+    }
+    closedir(d);
+    if (!app_id[0]) {
+        lcsys_log("raise: %s の app_id が %s の .desktop から引けない", prog, dir);
+        return;
+    }
+    {
+        struct sockaddr_un sa;
+        char req[300], reply[32];
+        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        ssize_t r;
+        if (fd < 0)
+            return;
+        memset(&sa, 0, sizeof sa);
+        sa.sun_family = AF_UNIX;
+        snprintf(sa.sun_path, sizeof sa.sun_path, "%s", sock);
+        if (connect(fd, (struct sockaddr *)&sa, sizeof sa) != 0) {
+            lcsys_log("raise: wm ソケット %s に繋げない errno %d", sock, errno);
+            close(fd);
+            return;
+        }
+        snprintf(req, sizeof req, "raise\t%s\n", app_id);
+        (void)write(fd, req, strlen(req));
+        r = read(fd, reply, sizeof reply - 1);
+        if (r > 0) reply[r] = 0; else reply[0] = 0;
+        lcsys_log("raise: app_id=%s -> %s", app_id, reply[0] ? reply : "(応答なし)");
+        close(fd);
+    }
 }
 
 /* 同じプログラムが単一実体として動いているか */
@@ -792,6 +863,7 @@ static int spawn_impl(const char *path, char *const argv[], char *const envp[], 
         if (running) {
             lcsys_log("spawn %s: pid %d としてもう動いている(GLib/GTK のアプリは 1 本まで)。2 本目は起こさない",
                       guest, running);
+            wm_raise_for(guest);
             errno = EBUSY;
             return -1;
         }
