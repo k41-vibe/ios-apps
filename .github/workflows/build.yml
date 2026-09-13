@@ -11,6 +11,9 @@ on:
   # リリース: <app小文字>-vX.Y.Z のタグ push で、そのアプリだけ建てて GitHub Release を発行(docs/VERSIONING.md)
   push:
     tags: ["*-v[0-9]*"]
+    # workflow_dispatch の API が使えないとき(2026-09-13 に GitHub が 500 を返し続けた)の逃げ道:
+    # build.ps1 が HEAD を build/<App> ブランチへ push すると、そのアプリだけ開発ビルドする
+    branches: ["build/*"]
 
 permissions:
   contents: write   # Release の作成に必要(タグ push 時のみ使う)
@@ -41,6 +44,7 @@ jobs:
             apps=$(printf '["%s"]' "$want")
           else
             want="${{ github.event.inputs.app }}"
+            case "${{ github.ref_name }}" in build/*) want="${GITHUB_REF_NAME#build/}";; esac
             if [ -n "$want" ]; then
               apps=$(printf '["%s"]' "$want")
             else
