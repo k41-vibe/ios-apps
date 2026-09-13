@@ -64,6 +64,10 @@ int lcsys_is_guest_thread(void);
 /* fork の子(まだ exec していない短命なスレッド)か。fd の表が 1 つしか無いので、
  * 子からの close は見送る必要がある。 */
 int lcsys_is_fork_child(void);
+/* 今のスレッドのゲストのプログラム(argv[0] 風のパス)。ゲストでなければ NULL */
+const char *lcsys_guest_program(void);
+/* sh / dash / bash か(fork を断る相手) */
+int lcsys_is_shell_program(const char *path);
 
 /* fork() の子として、procd の台帳に載ったスレッドを 1 本立てる。
  * fn は複製したスタックへ飛ぶので普通は戻ってこない。返り値は擬似 pid。 */

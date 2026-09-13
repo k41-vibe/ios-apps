@@ -154,6 +154,18 @@ pid_t fork(void)
         return -1;
     }
 
+    /* シェルの fork は断る。$(...) やパイプの子は exec せずシェルの続きを走るので、
+     * スタックだけ複製しても大域(メモリスタック、ジョブ表)を親と共有して親が落ちる
+     * (2026-09-13 実機: /etc/profile の $(dircolors -b) で dash が SIGSEGV)。
+     * -1 なら dash は "Cannot fork" で止まるだけで、デスクトップは生き残る。
+     * EAGAIN は bash が 1,2,4,8,16 秒待って再試行するので ENOMEM にする */
+    if (lcsys_is_shell_program(lcsys_guest_program())) {
+        lcsys_log("fork() -> -1 ENOMEM(%s はシェル。子がシェルの続きを走ると大域を共有して落ちる)",
+                  lcsys_guest_program());
+        errno = ENOMEM;
+        return -1;
+    }
+
     j = (struct fork_job *)calloc(1, sizeof *j);
     if (!j) {
         errno = ENOMEM;
