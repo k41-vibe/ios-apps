@@ -35,6 +35,11 @@
 - fontconfig のキャッシュ置き場 `home/cache/fontconfig` を先に作る(無いと fc-cache が諦める)
 - 更新の既定サーバーを LAN 優先に(Tailscale の平文 http は ATS が拒む)
 
+- **一覧とドックにテキストエディタが出ない**(実機 2026-09-13 build 46)。xiOS の deb には GUI アプリの
+  .desktop がほぼ無く(リポジトリ索引で 5 件、全部端末系)、並んでいたのは foot 系 3 件だけ。
+  foot は iOS の PTY 禁止で必ず落ちるので「タップしても何も出ない」に見えていた。
+  `home/applications` に org.gnome.TextEditor / es2gears の .desktop を生成し `IOSC_APPS_DIR` で指す
+
 ### Fixed
 - **起動直後に落ちる**(開発ビルド 0.0.20260913、クラッシュレポート `LiveContainer-2026-09-13-020018.ips`)。
   初回起動で生成する gdk-pixbuf の `loaders.cache` に `""` の行を置いていたが、

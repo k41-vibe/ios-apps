@@ -2,6 +2,9 @@ import Foundation
 import Darwin
 import UIKit
 
+/// 生成するテキストファイルの改行(Swift の文字列リテラル内に直接書かずに済ませる)
+private let LF = String(UnicodeScalar(10))
+
 // コンソール。画面用の文字列と、落ちても残るようファイルへ書く。
 //
 // 【重要】1 行ごとに fsync + @Published への追記をしていたら、経路変換の追跡を有効にした
@@ -248,6 +251,10 @@ final class Runner {
             "XDG_CACHE_HOME": cacheDir,
             // ioscbg のデスクトップ部品(Storage / Memory / Load / Session)の置き場
             "IOSC_WIDGET_CONFIG": widgetConfigPath,
+            // 一覧とドックに出すアプリ(shell-draw.h sd_scan_apps: ここを先に読み、そのあと
+            // /usr/share/applications を足す)。xiOS の deb には GUI アプリの .desktop がほぼ無く
+            // (実機 2026-09-13: foot 系 3 件だけ)、テキストエディタが一覧に出なかった
+            "IOSC_APPS_DIR": appsDir,
             "SHELL": "/var/jb/usr/bin/bash",
             "USER": "mobile",
         ]
@@ -267,6 +274,7 @@ final class Runner {
     var loadersCachePath: String { home + "/loaders.cache" }
     var cacheDir: String { home + "/cache" }
     var widgetConfigPath: String { home + "/iosc-widgets.conf" }
+    var appsDir: String { home + "/applications" }
 
     private func firstLaunchSetup() {
         let fm = FileManager.default
@@ -296,6 +304,25 @@ final class Runner {
         ].joined(separator: "\n")
         do { try loaders.write(toFile: loadersCachePath, atomically: true, encoding: .utf8) }
         catch { log.log("loaders.cache が書けない: \(error.localizedDescription)") }
+
+        // 一覧・ドック用の .desktop(生成物なので毎回書く)。Exec は PATH から引ける名前で、
+        // sd_launch が `sh -lc "<Exec>"` にし、procd が dash を通さず直接起こす
+        try? fm.createDirectory(atPath: appsDir, withIntermediateDirectories: true)
+        let apps: [(file: String, body: [String])] = [
+            ("org.gnome.TextEditor.desktop", [
+                "[Desktop Entry]", "Type=Application", "Name=Text Editor",
+                "Exec=gnome-text-editor", "Icon=org.gnome.TextEditor",
+            ]),
+            ("es2gears.desktop", [
+                "[Desktop Entry]", "Type=Application", "Name=Gears",
+                "Exec=es2gears_wayland", "Icon=applications-graphics",
+            ]),
+        ]
+        for a in apps {
+            let text = a.body.joined(separator: LF) + LF
+            do { try text.write(toFile: appsDir + "/" + a.file, atomically: true, encoding: .utf8) }
+            catch { log.log("\(a.file) が書けない: \(error.localizedDescription)") }
+        }
 
         // ioscbg の部品の配置。書式は `名前 x y 有効`(ioscbg.c:224 fscanf "%31s %d %d %d")。
         // ioscbg は部品を動かすたびに同じファイルへ書き戻すので、初回だけ書く
