@@ -51,6 +51,7 @@ struct lc_proc {
     int status;         /* exit code 0..255 */
     int done;
     int fork_child;     /* fork の子(exec で化けるためだけに居る短命なスレッド) */
+    int single_instance; /* GLib/GTK を使う: 同じプロセスに 2 本目は起こせない(型登録が 1 つ) */
     int detached;       /* pthread_detach 済み: join できないので done を見て待つ */
     struct lc_proc *next;
 };
@@ -248,6 +249,41 @@ static guest_main_fn find_entry(const struct mach_header_64 *hdr, uint64_t *entr
         lc = (const struct load_command *)((const char *)lc + lc->cmdsize);
     }
     return NULL;
+}
+
+/* 画像が libgobject / libgtk-4 を読み込むか(LC_LOAD_DYLIB を見る)。GLib の型登録
+ * (GType)と GApplication はプロセスで 1 つなので、こういうプログラムの 2 本目を同じ
+ * プロセスで起こすと初期化で落ちる(実機 2026-09-13: エディタを 2 回起動 →
+ * editor_application_new で NULL 参照)。 */
+static int image_uses_gobject(const struct mach_header_64 *hdr)
+{
+    const struct load_command *lc = (const struct load_command *)(hdr + 1);
+    uint32_t i;
+    for (i = 0; i < hdr->ncmds; i++) {
+        if (lc->cmd == LC_LOAD_DYLIB || lc->cmd == LC_LOAD_WEAK_DYLIB) {
+            const struct dylib_command *dc = (const struct dylib_command *)lc;
+            const char *name = (const char *)lc + dc->dylib.name.offset;
+            if (strstr(name, "libgobject-2.0") || strstr(name, "libgtk-4") || strstr(name, "libadwaita"))
+                return 1;
+        }
+        lc = (const struct load_command *)((const char *)lc + lc->cmdsize);
+    }
+    return 0;
+}
+
+/* 同じプログラムが単一実体として動いているか */
+static int single_instance_running(const char *guest)
+{
+    struct lc_proc *p;
+    int hit = 0;
+    pthread_mutex_lock(&procs_lock);
+    for (p = procs; p; p = p->next)
+        if (!p->done && p->single_instance && p->guest_path && strcmp(p->guest_path, guest) == 0) {
+            hit = p->pid;
+            break;
+        }
+    pthread_mutex_unlock(&procs_lock);
+    return hit;
 }
 
 /* -------------------------------------------------------- helpers */
@@ -751,6 +787,15 @@ static int spawn_impl(const char *path, char *const argv[], char *const envp[], 
      * as a new image; the copy keeps its code signature, so it works in JIT-less mode.
      * Only from the second spawn onwards - the first one has nothing stale to escape, and every
      * copy costs one image that is never unloaded (see the growth note below). */
+    {
+        int running = single_instance_running(guest);
+        if (running) {
+            lcsys_log("spawn %s: pid %d としてもう動いている(GLib/GTK のアプリは 1 本まで)。2 本目は起こさない",
+                      guest, running);
+            errno = EBUSY;
+            return -1;
+        }
+    }
     first = first_spawn_of(guest);
     if (!first && !getenv("LCSYS_NO_COPY")) {
         if (make_private_copy(image, priv, sizeof priv) == 0) {
@@ -803,6 +848,7 @@ static int spawn_impl(const char *path, char *const argv[], char *const envp[], 
     p->guest_path = strdup(guest);
     p->image_path = strdup(image);
     p->entry = entry;
+    p->single_instance = image_uses_gobject(hdr);
     if (!p->argv || !p->envp || !p->guest_path || !p->image_path || p->argc < 1) {
         free_proc(p);
         errno = EINVAL;

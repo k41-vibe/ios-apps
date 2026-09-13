@@ -40,6 +40,14 @@
   foot は iOS の PTY 禁止で必ず落ちるので「タップしても何も出ない」に見えていた。
   `home/applications` に org.gnome.TextEditor / es2gears の .desktop を生成し `IOSC_APPS_DIR` で指す
 
+- **GTK アプリを 2 回起動すると落ちる**(クラッシュレポート `LiveContainer-2026-09-13-192704.ips`、
+  `editor_application_new` で NULL 参照)。GLib の型登録と GApplication はプロセスで 1 つなので、
+  libgobject / libgtk-4 / libadwaita を読むプログラムは 1 本まで(procd: 動いていれば EBUSY)
+- **指で窓を動かせない・大きさを変えられない**。iosc の移動・リサイズは MOTION でしか進まず
+  (interactive_update)、TOUCH だけでは起点も更新も無い。最初の指は MOTION を同送し、離したら
+  BTN_LEFT の release だけ送る(press は送らない: タップの二重化と ioscdock の抑制すり抜けを避ける)。
+  「ポインタ同送」トグルで切れる
+
 ### Fixed
 - **起動直後に落ちる**(開発ビルド 0.0.20260913、クラッシュレポート `LiveContainer-2026-09-13-020018.ips`)。
   初回起動で生成する gdk-pixbuf の `loaders.cache` に `""` の行を置いていたが、

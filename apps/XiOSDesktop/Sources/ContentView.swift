@@ -161,6 +161,10 @@ struct ContentView: View {
                     set: { Runner.forkCloneEnabled = $0
                            setenv("LCSYS_FORK", $0 ? "clone" : "fail", 1) }
                 )).font(.footnote).fixedSize()
+                Toggle("ポインタ同送", isOn: Binding(
+                    get: { ScreenClient.pointerEmulation },
+                    set: { ScreenClient.pointerEmulation = $0 }
+                )).font(.footnote).fixedSize()
                 Spacer()
             }
             ScrollViewReader { proxy in
