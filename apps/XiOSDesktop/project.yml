@@ -19,8 +19,12 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LCGitCommit: $(LC_GIT_SHA)
         UILaunchScreen: {}
+        # 横向き: xiOS のシェルは論理幅 864 未満に組めない(iosc-shell.c pl_ui の下限 0.6)。
+        # 縦 393pt では 0.45 倍になるが、横 852pt なら等倍近くで指で触れる大きさになる
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         ITSAppUsesNonExemptEncryption: false
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true

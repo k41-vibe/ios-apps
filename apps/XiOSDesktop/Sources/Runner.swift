@@ -171,6 +171,14 @@ final class Runner {
             + "(縮小率 \(String(format: "%.2f", usableW / CGFloat(logicalWidth))))"
     }
 
+    /// 背景スレッドから: いまの向きで測り直す(UIWindow は主スレッドでしか読めない)
+    static func remeasureOnMain() -> String {
+        if Thread.isMainThread { return measureScreen() }
+        var r = ""
+        DispatchQueue.main.sync { r = measureScreen() }
+        return r
+    }
+
     static func logicalArg() -> String {
         "\(Int(logicalPoints.width.rounded()))x\(Int(logicalPoints.height.rounded()))"
     }
@@ -480,12 +488,9 @@ final class Runner {
             for name in ["ioscoverview.log", "ioscbar.log", "ioscdock.log", "ioscbg.log"] {
                 let path = dir + "/" + name
                 guard let text = try? String(contentsOfFile: path, encoding: .utf8), !text.isEmpty else { continue }
-                let lines = text.split(separator: "
-", omittingEmptySubsequences: false)
-                let tail = lines.suffix(40).joined(separator: "
-")
-                log.log("--- \(path) (末尾 \(min(40, lines.count)) / \(lines.count) 行) ---
-\(tail)")
+                let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+                let tail = lines.suffix(40).joined(separator: "\n")
+                log.log("--- \(path) (末尾 \(min(40, lines.count)) / \(lines.count) 行) ---\n\(tail)")
             }
         }
     }
@@ -549,6 +554,7 @@ final class Runner {
         }
         firstLaunchGuestSetup()
         log.log("=== iosc 起動 ===")
+        log.log(Self.remeasureOnMain())   // 起動前に向きを確定(横向きなら論理 864 が等倍近くになる)
         for d in [runtimeDir, xiosDir] {
             try? FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
         }

@@ -74,6 +74,7 @@ struct XSurfaceAPI {
 struct XInputAPI {
     typealias ConnectFn = @convention(c) (UnsafePointer<CChar>?) -> UnsafeMutableRawPointer?
     typealias TouchFn   = @convention(c) (UnsafeMutableRawPointer?, Int32, Int32, Int32, Int32) -> Int32
+    typealias OutputFn  = @convention(c) (UnsafeMutableRawPointer?, Int32, Int32, Int32) -> Int32
     typealias MotionFn  = @convention(c) (UnsafeMutableRawPointer?, Int32, Int32) -> Int32
     typealias TextFn    = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?) -> Int32
     typealias KeyFn     = @convention(c) (UnsafeMutableRawPointer?, Int32, Int32, Int32) -> Int32
@@ -88,6 +89,7 @@ struct XInputAPI {
     let key: KeyFn
     let sent: SentFn
     let traits: TraitsFn
+    let output: OutputFn
 
     init?(handle: UnsafeMutableRawPointer, log: ConsoleLog) {
         var missing: [String] = []
@@ -97,8 +99,9 @@ struct XInputAPI {
         }
         let c = sym("xi_connect"), t = sym("xi_touch"), m = sym("xi_motion")
         let x = sym("xi_text"), k = sym("xi_key"), n = sym("xi_sent"), tr = sym("xi_traits")
+        let ou = sym("xi_output")
         guard missing.isEmpty, let c = c, let t = t, let m = m, let x = x, let k = k, let n = n,
-              let tr = tr else {
+              let tr = tr, let ou = ou else {
             log.log("入力: libLCsys.dylib に \(missing.joined(separator: ", ")) が無い ← 古い dylib")
             return nil
         }
@@ -109,6 +112,7 @@ struct XInputAPI {
         key = unsafeBitCast(k, to: KeyFn.self)
         sent = unsafeBitCast(n, to: SentFn.self)
         traits = unsafeBitCast(tr, to: TraitsFn.self)
+        output = unsafeBitCast(ou, to: OutputFn.self)
     }
 }
 
@@ -143,6 +147,8 @@ final class ScreenClient: NSObject, MTKViewDelegate {
     private var dirtyTotal = 0
     private var lastReport = Date()
     private var disconnected = false
+    private var screenPath = ""          // 繋ぎ直し用(ddx ソケット)
+    private var reconnecting = false
     private var firstFrameLogged = false
     private var releaseErrors = 0
     // DIRTY が 1 件も来ないまま空回りした draw の回数。黙って黒いままになるのを防ぐ
@@ -186,6 +192,7 @@ final class ScreenClient: NSObject, MTKViewDelegate {
     // バックグラウンドから呼ぶこと。握手の中で最大 3 秒ブロックする。
     func connect(path: String) -> Bool {
         log.log("画面: xs_connect \(path) (\(path.utf8.count) B)")
+        screenPath = path
         guard let c = path.withCString({ api.connect($0) }) else {
             log.log("画面: xs_connect 失敗 errno \(errno) (\(String(cString: strerror(errno))))")
             return false
@@ -203,6 +210,49 @@ final class ScreenClient: NSObject, MTKViewDelegate {
             log.log("画面: STREAM_INFO 無し(caps=0)。解放フェンスは送らない")
         }
         return true
+    }
+
+    /// iosc が出力を作り直すと(回転、XIOS_IN_OUTPUT)表示クライアントは切られる
+    /// (xios_surface.c: 世代が上がって古い握手は閉じられる)。少し待って ddx に繋ぎ直す。
+    private func scheduleReconnect() {
+        guard !reconnecting else { return }
+        reconnecting = true
+        disconnected = true
+        log.log("画面: xs_poll が切断を返した errno \(errno)。ddx に繋ぎ直す")
+        let path = screenPath
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            var ok = false
+            for attempt in 1...20 {
+                usleep(250_000)
+                if let c = self.conn { self.conn = nil; self.api.close(c) }
+                if self.connect(path: path) {
+                    ok = true
+                    self.log.log("画面: 繋ぎ直し \(attempt) 回目で成功")
+                    break
+                }
+            }
+            DispatchQueue.main.async {
+                self.textures.removeAll()      // 面 id は新しい IOSurface を指す
+                self.pendingWait = nil
+                self.reconnecting = false
+                self.disconnected = !ok
+                if !ok { self.log.log("画面: 繋ぎ直しに失敗。描画を止める") }
+            }
+        }
+    }
+
+    /// 画面の大きさ(向き)が変わった。論理サイズを測り直して iosc に送る。
+    /// iosc は IOSurface を作り直し、こちらの接続を切るので、上の繋ぎ直しに続く
+    func outputChanged() {
+        let before = Runner.logicalPoints
+        let info = Runner.measureScreen()
+        guard Runner.logicalPoints != before else { return }
+        log.log("画面: 向きが変わった → \(info)")
+        guard let ic = inputConn, let xin = xin else { return }
+        let w = Int32(Runner.logicalPoints.width.rounded()), h = Int32(Runner.logicalPoints.height.rounded())
+        let rc = xin.output(ic, w, h, 0)
+        log.log("画面: OUTPUT \(w)x\(h) を iosc へ送った rc=\(rc)")
     }
 
     // G2 では切らない(iosc も落とさない)。API の対称性のために残す。
@@ -426,7 +476,9 @@ final class ScreenClient: NSObject, MTKViewDelegate {
 
     // ---------------------------------------------------------------- MTKViewDelegate
 
-    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
+        DispatchQueue.main.async { [weak self] in self?.outputChanged() }
+    }
 
     func draw(in view: MTKView) {
         guard let conn = conn, !disconnected else { return }
@@ -454,8 +506,7 @@ final class ScreenClient: NSObject, MTKViewDelegate {
             } else if r == 0 {
                 break
             } else {
-                disconnected = true
-                log.log("画面: xs_poll が切断を返した errno \(errno)。描画を止める")
+                scheduleReconnect()
                 break
             }
         }

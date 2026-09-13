@@ -55,7 +55,7 @@ echo "== libLCsys.dylib load commands"
 otool -L "$OUT"
 otool -l "$OUT" | grep -A2 LC_REEXPORT_DYLIB
 echo "== exported overrides (expect open/stat/statfs/exit/dlopen/lcsys_*/xs_*/xi_*):"
-nm -gU "$OUT" | grep -E ' _(open|stat|lstat|exit|_exit|fork|dlopen|realpath|posix_spawn|lcsys_init|lcsys_spawn|lcsys_wait|lcsys_install_xpc_shim|lcsys_shared_event_for_token|xs_connect|xs_poll|xs_release|xs_presented|xs_surface|xs_close|xi_connect|xi_touch|xi_text|xi_key|statfs|statvfs|fork|vfork|waitpid|wait4|kill|lc_savectx|lc_restorectx|lcsys_fork_child|xs_pacing|xi_traits|dbopen|getgrouplist|bind|connect)($|[$])' || true
+nm -gU "$OUT" | grep -E ' _(open|stat|lstat|exit|_exit|fork|dlopen|realpath|posix_spawn|lcsys_init|lcsys_spawn|lcsys_wait|lcsys_install_xpc_shim|lcsys_shared_event_for_token|xs_connect|xs_poll|xs_release|xs_presented|xs_surface|xs_close|xi_connect|xi_touch|xi_text|xi_key|statfs|statvfs|fork|vfork|waitpid|wait4|kill|lc_savectx|lc_restorectx|lcsys_fork_child|xs_pacing|xi_traits|xi_output|dbopen|getgrouplist|bind|connect)($|[$])' || true
 
 echo "== copying staged tree from $STAGE_DIR"
 test -d "$STAGE_DIR/Frameworks" || { echo "::error::$STAGE_DIR/Frameworks missing"; exit 1; }
