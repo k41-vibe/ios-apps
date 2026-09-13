@@ -76,6 +76,7 @@ struct XInputAPI {
     typealias TouchFn   = @convention(c) (UnsafeMutableRawPointer?, Int32, Int32, Int32, Int32) -> Int32
     typealias OutputFn  = @convention(c) (UnsafeMutableRawPointer?, Int32, Int32, Int32) -> Int32
     typealias MotionFn  = @convention(c) (UnsafeMutableRawPointer?, Int32, Int32) -> Int32
+    typealias ButtonFn  = @convention(c) (UnsafeMutableRawPointer?, Int32, Int32, Int32, Int32) -> Int32
     typealias TextFn    = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?) -> Int32
     typealias KeyFn     = @convention(c) (UnsafeMutableRawPointer?, Int32, Int32, Int32) -> Int32
     typealias SentFn    = @convention(c) (UnsafeMutableRawPointer?) -> UInt
@@ -85,6 +86,7 @@ struct XInputAPI {
     let connect: ConnectFn
     let touch: TouchFn
     let motion: MotionFn
+    let button: ButtonFn
     let text: TextFn
     let key: KeyFn
     let sent: SentFn
@@ -99,15 +101,16 @@ struct XInputAPI {
         }
         let c = sym("xi_connect"), t = sym("xi_touch"), m = sym("xi_motion")
         let x = sym("xi_text"), k = sym("xi_key"), n = sym("xi_sent"), tr = sym("xi_traits")
-        let ou = sym("xi_output")
+        let ou = sym("xi_output"), bt = sym("xi_button")
         guard missing.isEmpty, let c = c, let t = t, let m = m, let x = x, let k = k, let n = n,
-              let tr = tr, let ou = ou else {
+              let tr = tr, let ou = ou, let bt = bt else {
             log.log("入力: libLCsys.dylib に \(missing.joined(separator: ", ")) が無い ← 古い dylib")
             return nil
         }
         connect = unsafeBitCast(c, to: ConnectFn.self)
         touch = unsafeBitCast(t, to: TouchFn.self)
         motion = unsafeBitCast(m, to: MotionFn.self)
+        button = unsafeBitCast(bt, to: ButtonFn.self)
         text = unsafeBitCast(x, to: TextFn.self)
         key = unsafeBitCast(k, to: KeyFn.self)
         sent = unsafeBitCast(n, to: SentFn.self)
@@ -408,6 +411,15 @@ final class ScreenClient: NSObject, MTKViewDelegate {
         return (Int32(fx), Int32(fy))
     }
 
+    /// 最初の指はポインタも同送する(iosc の窓の移動・リサイズは MOTION でしか進まない:
+    /// wayland_iosc.c interactive_update は handle_motion から、interactive_end は
+    /// ボタン release から)。押下(press)は送らない: 送るとタップが GTK に 2 回届き、
+    /// ioscdock の「touch up から 450ms の抑制」(pt_button)にも掛からない。
+    /// 離したときに release だけ送れば interactive_end が走り、押していないボタンの
+    /// release はどのクライアントも無視する
+    private var pointerSlot: Int32?
+    static var pointerEmulation = true
+
     /// phase: 0=離 1=触 2=移動 3=取消(第 6 節)
     func send(touches: Set<UITouch>, phase: Int32, in view: MTKView) {
         guard let conn = inputConn, let xin = xin else { return }
@@ -425,10 +437,17 @@ final class ScreenClient: NSObject, MTKViewDelegate {
                 continue   // 触り始めを見ていない指は無視する
             }
             if let (x, y) = fbPoint(t.location(in: view), in: view) {
-                // TOUCH だけを送る。本物のタッチ画面もそうで、ポインタ側は iosc が
-                // 自分で合成する(ioscdock に "suppress synthetic pointer after touch"
-                // という重複抑制がある)。こちらから MOTION も送ると二重になる
+                let emulate = Self.pointerEmulation && (pointerSlot == nil || pointerSlot == slot)
+                if emulate && phase == 1 {
+                    pointerSlot = slot
+                    _ = xin.motion(conn, x, y)      // g_cursor を指に置いてから触る(移動の起点になる)
+                }
                 _ = xin.touch(conn, x, y, slot, phase)
+                if emulate && phase == 2 { _ = xin.motion(conn, x, y) }
+                if emulate && (phase == 0 || phase == 3) {
+                    _ = xin.button(conn, x, y, 0x110, 0)   // BTN_LEFT release だけ: interactive_end
+                    pointerSlot = nil
+                }
                 touchesSent += 1
                 if touchesSent <= 3 || touchesSent % 200 == 0 {
                     log.log("入力: touch slot=\(slot) phase=\(phase) (\(x),\(y)) 累計 \(touchesSent)")
