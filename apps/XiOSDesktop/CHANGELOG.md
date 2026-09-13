@@ -55,6 +55,12 @@
 - GLib/GTK アプリの 2 回目のタップは、2 本目を起こす代わりに iosc の wm ソケットへ
   `raise<TAB><app_id>` を送って既存の窓を前に出す(docs/iosc-desktop-env.md §7 と同じ)
 
+- **指が窓に入ると GTK アプリが abort**(クラッシュレポート `LiveContainer-2026-09-13-200920.ips`)。
+  GDK はカーソルテーマ名が無いと "default" を探し、ipa には Adwaita しか無く読み込みに失敗、
+  その後 `_gdk_wayland_display_get_cursor_theme` の `g_assert(cursor_theme_name)` で落ちる
+  (gdkdisplay-wayland.c 4.14.5)。`~/.config/gtk-4.0/settings.ini` に `gtk-cursor-theme-name=Adwaita`
+  を生成し、`XCURSOR_THEME=Adwaita` も置く
+
 ### Fixed
 - **起動直後に落ちる**(開発ビルド 0.0.20260913、クラッシュレポート `LiveContainer-2026-09-13-020018.ips`)。
   初回起動で生成する gdk-pixbuf の `loaders.cache` に `""` の行を置いていたが、

@@ -256,6 +256,8 @@ final class Runner {
             // (実機 2026-09-13: foot 系 3 件だけ)、テキストエディタが一覧に出なかった
             "IOSC_APPS_DIR": appsDir,
             "IOSC_WM_SOCK": xiosDir + "/wm",     // procd が「2 回目のタップ = 既存の窓を前へ」に使う
+            "XCURSOR_THEME": "Adwaita",          // libwayland-cursor 側の既定(settings.ini と同じ向き)
+            "XCURSOR_SIZE": "32",
             "SHELL": "/var/jb/usr/bin/bash",
             "USER": "mobile",
         ]
@@ -324,6 +326,17 @@ final class Runner {
             do { try text.write(toFile: appsDir + "/" + a.file, atomically: true, encoding: .utf8) }
             catch { log.log("\(a.file) が書けない: \(error.localizedDescription)") }
         }
+
+        // GTK4 の設定(GtkSettings が $XDG_CONFIG_HOME/gtk-4.0/settings.ini を読む)。
+        // カーソルテーマ名が無いと GDK は "default" を探し、ipa には Adwaita しか無いので失敗、
+        // その後ポインタが窓に入った瞬間に g_assert(cursor_theme_name) で abort する
+        // (クラッシュレポート 2026-09-13 20:09、gdkdisplay-wayland.c)。名前を Adwaita にしておく
+        let gtkConf = home + "/.config/gtk-4.0"
+        try? fm.createDirectory(atPath: gtkConf, withIntermediateDirectories: true)
+        let settings = ["[Settings]", "gtk-cursor-theme-name=Adwaita", "gtk-cursor-theme-size=32",
+                        "gtk-icon-theme-name=Adwaita", ""].joined(separator: LF)
+        do { try settings.write(toFile: gtkConf + "/settings.ini", atomically: true, encoding: .utf8) }
+        catch { log.log("settings.ini が書けない: \(error.localizedDescription)") }
 
         // ioscbg の部品の配置。書式は `名前 x y 有効`(ioscbg.c:224 fscanf "%31s %d %d %d")。
         // ioscbg は部品を動かすたびに同じファイルへ書き戻すので、初回だけ書く
