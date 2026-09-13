@@ -11,6 +11,10 @@
 `docs/review-2026-09-13.md`(xiOS のソースと設計文書との照合)に基づく一括の見直し。
 
 ### Added
+- **「ログを PC に送る」ボタン**(コンソールと画面右下の紙飛行機)。xiosdesktop.log を配布サーバーの
+  `/upload/` に POST し、PC の `dist/reports/` に時刻付きで保存する(tools/serve-ipa.py)。
+  Discord の Webhook は書き込み専用で受け取れないので、経路を PC 直結にした
+
 - **アプリ内アップデート**(`Sources/Updater.swift`)。起動時に PC の配布サーバー
   (`tools/serve-ipa.py` の `/XiOSDesktop.json`)を見て、新しい build があれば 1 タップで
   ipa を取り、自分の .app を入れ替え、LiveContainer の台帳 `LCAppInfo.plist` の

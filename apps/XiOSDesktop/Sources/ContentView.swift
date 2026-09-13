@@ -48,6 +48,11 @@ struct ContentView: View {
                         } label: {
                             Image(systemName: "terminal").frame(width: 32, height: 28)
                         }
+                        Button {
+                            Task { await updater.sendLog() }
+                        } label: {
+                            Image(systemName: "paperplane").frame(width: 32, height: 28)
+                        }
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -95,6 +100,11 @@ struct ContentView: View {
                     Button("更新を確認") { Task { await updater.check() } }.buttonStyle(.bordered)
                     Text(updater.message).font(.footnote).lineLimit(2)
                 }
+                Spacer()
+            }
+            HStack(spacing: 8) {
+                Button("ログを PC に送る") { Task { await updater.sendLog() } }.buttonStyle(.bordered)
+                Text(updater.sendState).font(.footnote).lineLimit(2)
                 Spacer()
             }
             HStack {
