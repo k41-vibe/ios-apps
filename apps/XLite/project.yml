@@ -1,0 +1,44 @@
+name: XLite
+options:
+  bundleIdPrefix: com.rutoi
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "16.0"
+targets:
+  XLite:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: XLite
+        # 版は CI が xcodebuild の引数で注入する(docs/VERSIONING.md)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LCGitCommit: $(LC_GIT_SHA)
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        ITSAppUsesNonExemptEncryption: false
+        # アプリ内アップデート: PC の配布サーバー(http、LAN / Tailscale)から ipa を取る。
+        # x.com 自体は https なので、この例外は更新のためだけ
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: 同じネットワークの PC から新しい版を取りに行くため
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.rutoi.xlite
+        MARKETING_VERSION: "0.0.0"
+        CURRENT_PROJECT_VERSION: "0"
+        LC_GIT_SHA: "local"
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_REQUIRED: "NO"
+        ENABLE_BITCODE: "NO"
