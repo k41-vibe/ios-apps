@@ -171,7 +171,7 @@ struct ContentView: View {
                     set: { Runner.forkCloneEnabled = $0
                            setenv("LCSYS_FORK", $0 ? "clone" : "fail", 1) }
                 )).font(.footnote).fixedSize()
-                Toggle("指1本=ポインタ", isOn: Binding(
+                Toggle("ポインタ操作(窓移動)", isOn: Binding(
                     get: { ScreenClient.singleFingerIsPointer },
                     set: { ScreenClient.singleFingerIsPointer = $0 }
                 )).font(.footnote).fixedSize()

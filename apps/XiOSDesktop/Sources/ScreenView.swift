@@ -528,8 +528,11 @@ final class ScreenClient: NSObject, MTKViewDelegate {
     private var lastPointerPt: (Int32, Int32)?
     static let longPressSeconds = 0.55
     static let longPressSlopPt: CGFloat = 12
-    /// 切ると従来どおり全部 TOUCH(比較用)
-    static var singleFingerIsPointer = true
+    /// 既定は false = 全部 wl_touch を GTK に渡す(iPad 流)。GTK4 が慣性スクロール・ピンチ・
+    /// 長押しメニュー・文字選択を自前でやる(docs/gnome-touch-ux.md「wl_touch alone」)。
+    /// true にすると指 1 本をマウスのポインタにする(長押し右クリック、窓の移動・リサイズ用。
+    /// iosc の interactive_update はポインタの MOTION でしか進まないため、窓移動はこちら)
+    static var singleFingerIsPointer = false
 
     private func cancelLongPress() { longPressWork?.cancel(); longPressWork = nil }
 
