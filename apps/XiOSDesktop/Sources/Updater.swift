@@ -44,7 +44,10 @@ final class Updater: ObservableObject {
     /// (実機 2026-09-13: "requires the use of a secure connection")。ATS は本体 LiveContainer の
     /// Info.plist で決まるのでこちらでは緩められない。LAN は「ローカルネットワーク」の例外で通る。
     /// Tailscale を使うなら `tailscale cert` の正規証明書で https にする(未着手)
-    static let defaultServers = ["http://192.168.10.113:8788", "http://100.111.178.20:8788"]
+    /// 外出先向け: Tailscale の正規証明書で https 化した配布サーバー(tools/serve-ipa.py、port+1)。
+    /// 名前解決は iPhone 側の Tailscale(MagicDNS)が行う
+    static let defaultServers = ["http://192.168.10.113:8788", "https://node.tail1f41c8.ts.net:8789",
+                                 "http://100.111.178.20:8788"]
 
     let log: ConsoleLog
 
