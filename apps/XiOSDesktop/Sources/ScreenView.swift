@@ -243,7 +243,11 @@ final class ScreenClient: NSObject, MTKViewDelegate {
     }
 
     private func readerLoop(_ gen: Int) {
-        while gen == readerGen, !disconnected, let conn = conn {
+        // 条件は世代番号だけ。繋ぎ直しの途中は disconnected が true のままなので、それを見ると
+        // 起きた直後に抜けてしまう(実機 2026-09-14 build 59: 回転後に dirty 累計 0 のまま)
+        log.log("画面: 読み取りスレッド開始(世代 \(gen))")
+        defer { log.log("画面: 読み取りスレッド終了(世代 \(gen))") }
+        while gen == readerGen, let conn = conn {
             var pfd = pollfd(fd: api.fd(conn), events: Int16(POLLIN), revents: 0)
             _ = poll(&pfd, 1, 100)   // C の poll(2)。api.poll とは別物
             var batch: [Frame] = []
@@ -330,7 +334,7 @@ final class ScreenClient: NSObject, MTKViewDelegate {
                 self.pendingWait = nil
                 self.reconnecting = false
                 self.disconnected = !ok
-                if !ok { self.log.log("画面: 繋ぎ直しに失敗。描画を止める") }
+                if !ok { self.readerGen += 1; self.log.log("画面: 繋ぎ直しに失敗。描画を止める") }
             }
         }
     }
