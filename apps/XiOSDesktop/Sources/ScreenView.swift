@@ -717,6 +717,14 @@ final class ScreenClient: NSObject, MTKViewDelegate {
             for f in batch { cb.encodeSignalEvent(ev, value: f.seq) }
             cb.commit()          // ここで commit 済みにしてから下の RELEASED を出す
         }
+        // 早い ack: iosc は「こちらが PRESENTED を返すまで」クライアントに次のフレームを描かせない
+        // (wayland_iosc.c present_ack_timer_cb、100ms で諦める)。画面に出た瞬間(addPresentedHandler、
+        // 垂直同期 1 回分あと)まで待って返すと 1 周が 45〜50ms になり、合成が毎秒 20 回で頭打ちだった
+        // (実機 2026-09-14)。GPU がこの面の読み取りを終えた時点で返せば、その 1 回分が消える。
+        // 実測時刻つきの ack(measured=1)は従来どおり表示後に別途送る(同じ seq の上書きは無害)
+        if let last = batch.last {
+            _ = api.presented(conn, last.seq, 0, 0)
+        }
         for f in batch {
             guard api.release(conn, f.id, f.seq) != 0 else { continue }
             releaseErrors += 1

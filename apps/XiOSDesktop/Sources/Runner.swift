@@ -316,8 +316,10 @@ final class Runner {
                 "[Desktop Entry]", "Type=Application", "Name=Text Editor",
                 "Exec=gnome-text-editor", "Icon=org.gnome.TextEditor",
             ]),
+            // Gears(mesa-demos 8.4.0 の es2gears)は GL の確認用。閉じる要求を無視する古いデモで
+            // 消せないので一覧からは外す(NoDisplay)。必要ならコンソールの「歯車」で起こせる
             ("es2gears.desktop", [
-                "[Desktop Entry]", "Type=Application", "Name=Gears",
+                "[Desktop Entry]", "Type=Application", "Name=Gears", "NoDisplay=true",
                 "Exec=es2gears_wayland", "Icon=applications-graphics",
             ]),
         ]
