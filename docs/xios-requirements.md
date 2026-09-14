@@ -6,6 +6,8 @@ xiOS のソース(MaxLeiter/jailbreak `x11/`)と設計文書を読み、**脱獄
 `apps/iosc-desktop/xios-session-lib.sh`、`apps/Xios/Sources/XScreen.swift` / `IoscInput.c`、
 `wayland/iosc*.c`、`apps/iosc-shell/*.c|h`。
 
+構造・処理の流れ・移植方針の本文は `xios-port-policy.md`。
+
 方針: **OS の見た目と振る舞い(iosc、シェル、GTK アプリ)は deb のまま**。こちらが作るのは
 「入力」「表示」「処理系(OS の窓口)」の翻訳層と、パッケージに欠けている生成物だけ。
 
