@@ -39,6 +39,8 @@ struct XSurfaceAPI {
     let lastFenceToken: TokenFn
     let eventForToken: EventFn
     let pacing: PacingFn
+    typealias FdFn = @convention(c) (UnsafeMutableRawPointer?) -> Int32
+    let fd: FdFn
 
     init?(handle: UnsafeMutableRawPointer, log: ConsoleLog) {
         var missing: [String] = []
@@ -49,9 +51,9 @@ struct XSurfaceAPI {
         let c = sym("xs_connect"), p = sym("xs_poll"), s = sym("xs_surface"), n = sym("xs_count")
         let i = sym("xs_info"), r = sym("xs_release"), pr = sym("xs_presented"), cl = sym("xs_close")
         let rt = sym("xs_release_token"), ft = sym("xs_last_fence_token")
-        let ev = sym("lcsys_shared_event_for_token"), pc = sym("xs_pacing")
+        let ev = sym("lcsys_shared_event_for_token"), pc = sym("xs_pacing"), fdp = sym("xs_fd")
         guard missing.isEmpty, let c = c, let p = p, let s = s, let n = n, let i = i, let r = r,
-              let pr = pr, let cl = cl, let rt = rt, let ft = ft, let ev = ev, let pc = pc else {
+              let pr = pr, let cl = cl, let rt = rt, let ft = ft, let ev = ev, let pc = pc, let fdp = fdp else {
             log.log("画面: libLCsys.dylib に \(missing.joined(separator: ", ")) が無い ← 古い dylib")
             return nil
         }
@@ -67,6 +69,7 @@ struct XSurfaceAPI {
         lastFenceToken = unsafeBitCast(ft, to: TokenFn.self)
         eventForToken = unsafeBitCast(ev, to: EventFn.self)
         pacing = unsafeBitCast(pc, to: PacingFn.self)
+        fd = unsafeBitCast(fdp, to: FdFn.self)
     }
 }
 
@@ -212,7 +215,87 @@ final class ScreenClient: NSObject, MTKViewDelegate {
         } else {
             log.log("画面: STREAM_INFO 無し(caps=0)。解放フェンスは送らない")
         }
+        startReader()
         return true
+    }
+
+    // ------------------------------------------------------------ 読み取りスレッド
+    //
+    // DIRTY を垂直同期と無関係に受け取り、面を自前のテクスチャへ複写して、その完了で
+    // RELEASED と PRESENTED を返す。iosc はクライアントの次のフレームを PRESENTED で待つ
+    // (present_ack_timer_cb)ので、ack が垂直同期に縛られると 1 周が 2 回分(約 33ms)になる
+    // (実機 2026-09-14: 合成 25〜34 回/秒で頭打ち)。画面への提示は draw(in:) が 60fps で
+    // 最新の複写を貼るだけ。複写先は 2 枚交互(同じ queue なので GPU の順序で守られる)。
+    private var readerGen = 0
+    private let latestLock = NSLock()
+    private var latest: (tex: MTLTexture, id: UInt32, seq: UInt64)?
+    private var lastPresentedSeq: UInt64 = 0
+    private var stage: [MTLTexture] = []
+    private var stageIndex = 0
+
+    private func startReader() {
+        readerGen += 1
+        let gen = readerGen
+        let t = Thread { [weak self] in self?.readerLoop(gen) }
+        t.name = "xs-reader"
+        t.qualityOfService = .userInteractive
+        t.start()
+    }
+
+    private func readerLoop(_ gen: Int) {
+        while gen == readerGen, !disconnected, let conn = conn {
+            var pfd = pollfd(fd: api.fd(conn), events: Int16(POLLIN), revents: 0)
+            _ = poll(&pfd, 1, 100)   // C の poll(2)。api.poll とは別物
+            var batch: [Frame] = []
+            var broken = false
+            while batch.count < 8 {
+                var sid: UInt32 = 0, seq: UInt64 = 0, fence: UInt64 = 0
+                let r = api.poll(conn, &sid, &seq, &fence)
+                if r == 1 { batch.append(Frame(id: sid, seq: seq, fence: fence)) }
+                else if r == 0 { break }
+                else { broken = true; break }
+            }
+            if broken {
+                DispatchQueue.main.async { [weak self] in self?.scheduleReconnect() }
+                return
+            }
+            if batch.isEmpty { continue }
+            dirtyTotal += batch.count
+            stageFrame(batch, conn: conn)
+        }
+    }
+
+    /// 一番新しい面をフェンス待ちつきで複写し、完了で latest を差し替えて ack
+    private func stageFrame(_ batch: [Frame], conn: UnsafeMutableRawPointer) {
+        guard let last = batch.last, let src = texture(for: last.id), let cb = queue.makeCommandBuffer() else {
+            finish(batch)
+            return
+        }
+        if stage.count < 2 || stage[0].width != src.width || stage[0].height != src.height {
+            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: src.pixelFormat,
+                                                             width: src.width, height: src.height, mipmapped: false)
+            d.usage = .shaderRead
+            d.storageMode = .private
+            stage = (0..<2).compactMap { _ in device.makeTexture(descriptor: d) }
+            guard stage.count == 2 else { finish(batch); return }
+            log.log("画面: 複写先 \(src.width)x\(src.height) を 2 枚用意")
+        }
+        stageIndex = (stageIndex + 1) % 2
+        let dst = stage[stageIndex]
+        if let tp = api.lastFenceToken(conn), let ev = sharedEvent(token: tp) {
+            cb.encodeWaitForEvent(ev, value: last.fence)   // iosc の描き込み完了を GPU で待つ
+        }
+        guard let blit = cb.makeBlitCommandEncoder() else { cb.commit(); finish(batch); return }
+        blit.copy(from: src, to: dst)
+        blit.endEncoding()
+        cb.addCompletedHandler { [weak self] _ in
+            guard let self = self else { return }
+            self.latestLock.lock()
+            self.latest = (dst, last.id, last.seq)
+            self.latestLock.unlock()
+            self.finish(batch)   // 解放イベント + RELEASED + 早い PRESENTED
+        }
+        cb.commit()
     }
 
     /// iosc が出力を作り直すと(回転、XIOS_IN_OUTPUT)表示クライアントは切られる
@@ -228,6 +311,7 @@ final class ScreenClient: NSObject, MTKViewDelegate {
             var ok = false
             for attempt in 1...20 {
                 usleep(250_000)
+                self.readerGen += 1
                 if let c = self.conn { self.conn = nil; self.api.close(c) }
                 if self.connect(path: path) {
                     ok = true
@@ -236,7 +320,13 @@ final class ScreenClient: NSObject, MTKViewDelegate {
                 }
             }
             DispatchQueue.main.async {
+                self.cacheLock.lock()
                 self.textures.removeAll()      // 面 id は新しい IOSurface を指す
+                self.cacheLock.unlock()
+                self.latestLock.lock()
+                self.latest = nil              // 古い大きさの複写は貼らない
+                self.latestLock.unlock()
+                self.stage.removeAll()
                 self.pendingWait = nil
                 self.reconnecting = false
                 self.disconnected = !ok
@@ -260,6 +350,7 @@ final class ScreenClient: NSObject, MTKViewDelegate {
 
     // G2 では切らない(iosc も落とさない)。API の対称性のために残す。
     func stop() {
+        readerGen += 1
         guard let c = conn else { return }
         conn = nil
         api.close(c)
@@ -267,8 +358,11 @@ final class ScreenClient: NSObject, MTKViewDelegate {
 
     // トークン -> MTLSharedEvent。ブローカー代替(xpcshim.m)を通す。同じトークンなら
     // 毎フレーム作り直さない。
+    private let cacheLock = NSLock()   // textures / eventCache は読み取りスレッドと主スレッドが触る
+
     private func sharedEvent(token: UnsafePointer<UInt8>) -> MTLSharedEvent? {
         let key = Data(bytes: token, count: 32)
+        cacheLock.lock(); defer { cacheLock.unlock() }
         if let e = eventCache[key] { return e }
         let dev = Unmanaged.passUnretained(device as AnyObject).toOpaque()
         guard let p = api.eventForToken(dev, token, 32) else { return nil }
@@ -321,6 +415,7 @@ final class ScreenClient: NSObject, MTKViewDelegate {
     // 面 id ごとに MTLTexture を 1 枚だけ作る。IOSurface は接続の寿命の間ずっと
     // 同じものなので、毎フレーム makeTexture すると無駄なだけでなく重い。
     private func texture(for id: UInt32) -> MTLTexture? {
+        cacheLock.lock(); defer { cacheLock.unlock() }
         if let t = textures[id] { return t }
         guard let conn = conn, let raw = api.surface(conn, id) else {
             log.log("画面: 面 id \(id) の IOSurface が無い")
@@ -609,67 +704,31 @@ final class ScreenClient: NSObject, MTKViewDelegate {
             _ = api.pacing(conn, Int32(interval), interval, 30_000, Int32(fps) * 1000)
         }
 
-        // 1 回の draw で溜まっている DIRTY を全部引き取る。描くのは一番新しい 1 枚だけ
-        // だが、引き取った分は全部 RELEASED を返す(返さないと 3 枚とも pending になって
-        // iosc が repaint_retry_soon() で回り続け、画面が止まる。第 5 節)。
-        var batch: [Frame] = []
-        while batch.count < 8 {
-            var sid: UInt32 = 0, seq: UInt64 = 0, fence: UInt64 = 0
-            let r = api.poll(conn, &sid, &seq, &fence)
-            if r == 1 {
-                batch.append(Frame(id: sid, seq: seq, fence: fence))
-            } else if r == 0 {
-                break
-            } else {
-                scheduleReconnect()
-                break
-            }
-        }
-        dirtyTotal += batch.count
-
-        var newest: MTLTexture?
-        if let last = batch.last {
-            newest = texture(for: last.id)
-            // 待つのは最新のフェンス値だけでよい(同じタイムラインの単調増加値)
-            if let tp = api.lastFenceToken(conn), let ev = sharedEvent(token: tp) {
-                pendingWait = (ev, last.fence)
-            } else if pendingWait == nil && !firstFrameLogged {
-                log.log("画面: 提示フェンスのイベントが取れない(待たずに描く)")
-            }
-        }
-
+        // 面の読み取りと ack は読み取りスレッド(readerLoop / stageFrame)。ここは最新の複写を貼るだけ
+        latestLock.lock()
+        let l = latest
+        latestLock.unlock()
         guard let pipeline = pipeline, let drawable = view.currentDrawable,
-              let rpd = view.currentRenderPassDescriptor, let tex = newest ?? current,
+              let rpd = view.currentRenderPassDescriptor, let tex = l?.tex ?? current,
               let cb = queue.makeCommandBuffer() else {
-            // 描けなかったフレームも ack は返す
-            finish(batch)
             // 何も出ないまま黙るのが一番困る(実機 2026-09-12)。理由を 1 度だけ書く
             idleDraws += 1
             if idleDraws == 120 || idleDraws == 1800 {
-                // currentDrawable は読むたびに取りに行くので、ここでは触らない
                 let why = pipeline == nil ? "pipeline が無い"
-                    : (newest ?? current) == nil ? "DIRTY が 1 件も来ていない(クライアントは居る?)"
+                    : (l?.tex ?? current) == nil ? "DIRTY が 1 件も来ていない(クライアントは居る?)"
                     : "drawable か command buffer が取れない"
                 log.log("画面: \(idleDraws) 回空回り: \(why) dirty 累計 \(dirtyTotal) 面 \(api.count(conn)) 枚")
             }
             return
         }
         idleDraws = 0
-        // フェンス: iosc の描き込みが終わるまで GPU を待たせる(第 4 節)。
-        // encodeWaitForEvent はエンコーダを開く**前**に積むこと(開いている最中に
-        // 呼ぶと Metal が落とす)。
-        if let w = pendingWait {
-            cb.encodeWaitForEvent(w.event, value: w.value)
-            pendingWait = nil
-        }
         guard let enc = cb.makeRenderCommandEncoder(descriptor: rpd) else {
-            cb.commit()          // wait だけ積んだバッファを置き去りにしない
-            finish(batch)
+            cb.commit()
             return
         }
-        if let t = newest, let last = batch.last {
-            current = t
-            currentId = last.id
+        if let l = l {
+            current = l.tex
+            currentId = l.id
         }
         let vp = Self.aspectFit(content: CGSize(width: tex.width, height: tex.height),
                                 into: view.drawableSize)
@@ -682,18 +741,16 @@ final class ScreenClient: NSObject, MTKViewDelegate {
         enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         enc.endEncoding()
         cb.present(drawable)
-
-        let seq = batch.last?.seq
-        if seq != nil {
+        // 実測時刻つきの PRESENTED(measured=1)は、新しい複写を初めて画面に出したときだけ
+        if let l = l, l.seq != lastPresentedSeq {
+            lastPresentedSeq = l.seq
+            let seq = l.seq
             drawable.addPresentedHandler { [weak self] d in self?.reportPresented(seq, d) }
         }
-        cb.addCompletedHandler { [weak self] _ in self?.finish(batch) }
         cb.commit()
-
-        if !firstFrameLogged, !batch.isEmpty {
+        if !firstFrameLogged, let l = l {
             firstFrameLogged = true
-            log.log("画面: 最初のフレームを描いた id=\(currentId) seq=\(batch[0].seq) "
-                    + "fence=\(batch[0].fence) \(tex.width)x\(tex.height)")
+            log.log("画面: 最初のフレームを描いた id=\(l.id) seq=\(l.seq) \(tex.width)x\(tex.height)")
         }
         frames += 1
         if frames % 60 == 0 {

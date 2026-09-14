@@ -783,6 +783,12 @@ static int xs_poll_locked(struct xs_conn *c, uint32_t *surface_id, uint64_t *seq
     }
 }
 
+/* 読み取りスレッドが poll(2) で待つための fd(O_NONBLOCK のまま) */
+int xs_fd(xs_conn *c)
+{
+    return c ? c->fd : -1;
+}
+
 int xs_poll(xs_conn *c, uint32_t *surface_id, uint64_t *seq, uint64_t *fence_value)
 {
     int rc;
