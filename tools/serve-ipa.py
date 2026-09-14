@@ -145,6 +145,19 @@ def main():
         print(f"{label}: http://{ip}:{port}/XiOSDesktop.ipa")
     print()
     print("初回は LiveContainer の + から URL を貼る。2 回目からはアプリ内の「更新」で取り込める。止めるときは Ctrl+C")
+    # Tailscale の正規証明書があれば https も開く(iOS の ATS は 100.x への平文 http を拒む)。
+    # 取得: tailscale cert --cert-file tools/tls/node.crt --key-file tools/tls/node.key <PC名>.<tailnet>.ts.net
+    # (管理画面 DNS → HTTPS Certificates を有効にしておく)。https は port+1
+    tls_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tls")
+    crt, key = os.path.join(tls_dir, "node.crt"), os.path.join(tls_dir, "node.key")
+    if os.path.isfile(crt) and os.path.isfile(key):
+        import ssl, threading
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(crt, key)
+        https = http.server.ThreadingHTTPServer(("0.0.0.0", port + 1), Handler)
+        https.socket = ctx.wrap_socket(https.socket, server_side=True)
+        threading.Thread(target=https.serve_forever, daemon=True).start()
+        print(f"https: port {port + 1}(Tailscale 証明書 {crt})")
     http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
     return 0
 
