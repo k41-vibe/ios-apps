@@ -81,7 +81,18 @@ jobs:
         with:
           path: .deb-cache
           key: xios-debs-${{ hashFiles('tools/xios/closure_sha256.txt') }}
+      # 再リンク済みツリーはアーティファクトでなくキャッシュで build へ渡す
+      # (アーティファクト容量は無料枠 500MB で溜まる。キャッシュは別枠 10GB)。
+      # 鍵はツリーの中身を決めるファイルのハッシュ。deb もスクリプトも変わらなければ
+      # 再リンクごと飛ばせる(反復ビルドは Swift/native だけ変わるので毎回ヒットする)
+      - name: Cache staged tree
+        id: stagecache
+        uses: actions/cache@v4
+        with:
+          path: stage
+          key: xios-stage-${{ hashFiles('tools/xios/closure_sha256.txt', 'tools/xios/closure_urls.txt', 'tools/xios/stage.py', 'tools/xios/relink.py', 'tools/xios/closure.py') }}
       - name: Stage xiOS closure
+        if: steps.stagecache.outputs.cache-hit != 'true'
         run: |
           python tools/xios/stage.py \
             --urls tools/xios/closure_urls.txt \
@@ -90,12 +101,6 @@ jobs:
             --out stage \
             --clean --symlinks never
           du -sh stage/Frameworks stage/jb
-      - name: Upload staged tree
-        uses: actions/upload-artifact@v4
-        with:
-          name: xios-stage
-          path: stage
-          if-no-files-found: error
 
   build:
     needs: [list, stage]
@@ -152,12 +157,13 @@ jobs:
           test -d "$app"
           test -x "$app/${{ matrix.app }}" || { echo "::error::main executable missing in $app"; exit 1; }
 
-      - name: Download staged tree (apps with stage.txt)
+      - name: Restore staged tree (apps with stage.txt)
         if: hashFiles(format('apps/{0}/stage.txt', matrix.app)) != ''
-        uses: actions/download-artifact@v4
+        uses: actions/cache/restore@v4
         with:
-          name: xios-stage
           path: stage
+          key: xios-stage-${{ hashFiles('tools/xios/closure_sha256.txt', 'tools/xios/closure_urls.txt', 'tools/xios/stage.py', 'tools/xios/relink.py', 'tools/xios/closure.py') }}
+          fail-on-cache-miss: true
 
       - name: Post-build hook (apps/<app>/postbuild.sh)
         working-directory: apps/${{ matrix.app }}
@@ -191,6 +197,7 @@ jobs:
           name: ${{ matrix.app }}-build.log
           path: apps/${{ matrix.app }}/build.log
           if-no-files-found: ignore
+          retention-days: 1
 
       - name: Upload .ipa
         uses: actions/upload-artifact@v4
@@ -198,6 +205,7 @@ jobs:
           name: ${{ matrix.app }}.ipa
           path: apps/${{ matrix.app }}/${{ matrix.app }}.ipa
           if-no-files-found: error
+          retention-days: 1
 
       # ---- ここから下はタグ push(リリース)のときだけ ----
       # kioku と同じ: 1 版 = 1 リリース。タグ <app>-vX.Y.Z、名前 "<App> vX.Y.Z"、資産は <App>.ipa 固定。
