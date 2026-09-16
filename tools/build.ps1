@@ -100,11 +100,14 @@ if ($Release) {
 $runId = Wait-NewRun $before
 Write-Host "run: https://github.com/$repo/actions/runs/$runId"
 
+$assetTag = if ($tag) { $tag } else { "dev-$Name" }
 gh run watch $runId --exit-status
 if ($LASTEXITCODE -ne 0) {
     Write-Host "--- build.log (末尾) ---"
     $tmp = Join-Path $env:TEMP "ios-apps-log-$runId"
-    gh run download $runId -n "$Name-build.log" -D $tmp 2>$null
+    $old = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    gh release download $assetTag -p "build.log" -D $tmp --clobber 2>$null
+    $ErrorActionPreference = $old
     Get-Content (Join-Path $tmp "build.log") -Tail 40 -ErrorAction SilentlyContinue
     throw "ビルド失敗 (run $runId)"
 }
@@ -112,15 +115,15 @@ if ($LASTEXITCODE -ne 0) {
 New-Item -ItemType Directory -Force $Dest | Out-Null
 New-Item -ItemType Directory -Force "$root\dist" | Out-Null
 $tmp = Join-Path $env:TEMP "ios-apps-ipa-$runId"
-# 大きい ipa(100MB 級)は途中で接続が切れることがあるので 3 回まで再試行
+# ipa は Release 資産($assetTag)から取る。開発ビルドは dev-<Name>、リリースは <name>-vX.Y.Z。
+# (アーティファクト容量は無料枠 500MB で溜まり、上限に達すると 6〜12 時間 upload が止まるため)。
+# 大きい ipa は途中で切れることがあるので 3 回まで再試行
 $ipa = $null
 for ($try = 1; $try -le 3 -and -not $ipa; $try++) {
     if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }
-    # gh は失敗を stderr に書くので、$ErrorActionPreference="Stop" のままだと
-    # NativeCommandError が投げられて再試行に入れない。ここだけ握りつぶす
     try {
         $ErrorActionPreference = "Continue"
-        gh run download $runId -n "$Name.ipa" -D $tmp 2>&1 | Out-Null
+        gh release download $assetTag -p "$Name.ipa" -D $tmp --clobber 2>&1 | Out-Null
     } catch {
         Write-Host "download error: $($_.Exception.Message)"
     } finally {
@@ -129,15 +132,7 @@ for ($try = 1; $try -le 3 -and -not $ipa; $try++) {
     $ipa = Get-ChildItem $tmp -Filter *.ipa -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $ipa) { Write-Host "download retry $try"; Start-Sleep -Seconds 8 }
 }
-if (-not $ipa -and $tag) {
-    Write-Host "artifact から取れなかったので Release から取り直します"
-    if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }
-    try { $ErrorActionPreference = "Continue"; gh release download $tag -D $tmp --clobber 2>&1 | Out-Null }
-    catch { Write-Host "release download error: $($_.Exception.Message)" }
-    finally { $ErrorActionPreference = "Stop" }
-    $ipa = Get-ChildItem $tmp -Filter *.ipa -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-}
-if (-not $ipa) { throw "ipa のダウンロードに失敗 (run $runId)。ビルド自体は成功しているので Release から手動で取れます" }
+if (-not $ipa) { throw "ipa のダウンロードに失敗 (run $runId)。Release $assetTag から手動で取れます" }
 Copy-Item $ipa.FullName "$root\dist\$Name.ipa" -Force
 Copy-Item $ipa.FullName "$Dest\$Name.ipa" -Force
 Write-Host "完成: $Dest\$Name.ipa  ($([math]::Round($ipa.Length/1KB)) KB)"
