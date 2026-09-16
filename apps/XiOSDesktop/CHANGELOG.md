@@ -102,6 +102,12 @@
   代わりにタイトルバーのドラッグでの窓移動は当面効かない(iosc の interactive_update はポインタの
   MOTION でしか進まず、iosc は改変しない)。窓を動かすときはコンソールの「ポインタ操作(窓移動)」を入れる
 
+- **GTK アプリが描画中に落ちる**(クラッシュレポート `LiveContainer-2026-09-16-194647.ips`、
+  `gsk_gl_renderer` で SIGSEGV)。GTK4 の GL レンダラー(ngl)がこの ANGLE-Metal の土台で不安定。
+  xiOS 自身が `profile.d/10-gtk-renderer.sh` で `GSK_RENDERER=cairo`(ソフト描画)を強制しているのに、
+  こちらは ngl にしていた。cairo に合わせる。ゲストは getenv でプロセス環境を読むので、効くのは
+  Runner の setenv(procd の envp 配列上書きは getenv から見えず無効だった)
+
 ### Fixed
 - **起動直後に落ちる**(開発ビルド 0.0.20260913、クラッシュレポート `LiveContainer-2026-09-13-020018.ips`)。
   初回起動で生成する gdk-pixbuf の `loaders.cache` に `""` の行を置いていたが、

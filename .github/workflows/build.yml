@@ -96,10 +96,6 @@ jobs:
           name: xios-stage
           path: stage
           if-no-files-found: error
-          # 87MB を毎ビルド積む。既定の 90 日置くと数十世代たまり、2026-09-16 に保存容量の
-          # 上限(合計 5.5GB)に当たって stage が落ちた。次の build ジョブに渡すだけの中間物
-          # なので、渡し終えたら用は無い。
-          retention-days: 1
 
   build:
     needs: [list, stage]
@@ -202,9 +198,6 @@ jobs:
           name: ${{ matrix.app }}.ipa
           path: apps/${{ matrix.app }}/${{ matrix.app }}.ipa
           if-no-files-found: error
-          # 83MB。取り出すのはビルド直後なので、90 日分を置く理由が無い。
-          # リリースのタグ push で建てたものは Release に添付されるので、そちらは残る。
-          retention-days: 7
 
       # ---- ここから下はタグ push(リリース)のときだけ ----
       # kioku と同じ: 1 版 = 1 リリース。タグ <app>-vX.Y.Z、名前 "<App> vX.Y.Z"、資産は <App>.ipa 固定。
