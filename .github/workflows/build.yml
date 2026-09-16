@@ -190,22 +190,21 @@ jobs:
           fi
           ls -la "${{ matrix.app }}.ipa"
 
-      - name: Upload build log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.app }}-build.log
-          path: apps/${{ matrix.app }}/build.log
-          if-no-files-found: ignore
-          retention-days: 1
-
-      - name: Upload .ipa
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.app }}.ipa
-          path: apps/${{ matrix.app }}/${{ matrix.app }}.ipa
-          if-no-files-found: error
-          retention-days: 1
+      # 開発ビルドの ipa は Release 資産で配る(アーティファクト容量を使わない)。
+      # dev-<app> という 1 本の事前リリースに上書きし、build.ps1 はここから取る。
+      # タグ push(リリース)のときは下の Publish Release が正式版を出すので、ここは飛ばす。
+      - name: Publish dev ipa to rolling prerelease
+        if: needs.list.outputs.release == ''
+        working-directory: apps/${{ matrix.app }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="dev-${{ matrix.app }}"
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --prerelease --title "$tag" \
+              --notes "XiOSDesktop 開発ビルドの最新 ipa(build.ps1 とアプリ内更新が取得)。中身は build 番号で判別。"
+          gh release upload "$tag" "${{ matrix.app }}.ipa" --clobber
+          gh release upload "$tag" build.log --clobber || true
 
       # ---- ここから下はタグ push(リリース)のときだけ ----
       # kioku と同じ: 1 版 = 1 リリース。タグ <app>-vX.Y.Z、名前 "<App> vX.Y.Z"、資産は <App>.ipa 固定。
