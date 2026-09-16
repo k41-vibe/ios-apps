@@ -8,3 +8,4 @@ dist/
 __pycache__/
 *.pyc
 tools/discord-webhook.txt
+tools/tls/
