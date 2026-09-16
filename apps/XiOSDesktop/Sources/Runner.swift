@@ -241,7 +241,20 @@ final class Runner {
             "LC_CTYPE": "UTF-8",
             // GTK/GLib のアプリ向け(sd_launch:415-422 と同じ)。壁紙やバーには無害
             "GDK_BACKEND": "wayland",
-            "GSK_RENDERER": "ngl",
+            // xiOS 本体は profile.d/10-gtk-renderer.sh で cairo を指しており、照合表でもここは
+            // 「profile.d どおり cairo」になっている。プロセス全体の既定だけが ngl のままで、
+            // procd の `sh -lc` 経路(login なら cairo を足す、procd.c:803)を通らずに起きた
+            // アプリだけが ngl で描いていた。
+            //
+            // その ngl で落ちた: 2026-09-16 のクラッシュは gnome-text-editor の描画中、
+            // gsk_renderer_render の下で node を辿る再帰の底で NULL を参照している
+            // (far=0xffff...ffe8 = NULL-24、x0=0)。GTK 4.14 は ngl を既定にした版で、
+            // ngl の描画クラッシュは上流でも広く報告があり、逃げ道として GSK_RENDERER を
+            // gl か cairo に落とすのが定番になっている。
+            //
+            // ここを cairo にすると本体と経路の食い違いも消える。描画は CPU に降りるが、
+            // 画面の合成は iosc(GPU)のままなので、落ちる代わりに得るものは大きい。
+            "GSK_RENDERER": "cairo",
             "ANGLE_REAL_LIBEGL": "/var/jb/lib/angle/libEGL.angle.dylib",
             "GSETTINGS_BACKEND": "memory",
             "GTK_A11Y": "none",
