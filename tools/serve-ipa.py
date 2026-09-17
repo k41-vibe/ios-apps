@@ -101,6 +101,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             sys.stderr.write(f"  受信: {path} ({len(data)} B)\n")
 
     def do_GET(self):
+        # source.json は実ファイル。LiveContainer にソースとして登録するもので、
+        # 下の「<Name>.json は <Name>.ipa の版情報」という扱いの例外にあたる。
+        if os.path.basename(self.path.split("?")[0]) == "source.json":
+            super().do_GET()
+            return
+
         if self.path.endswith(".json"):
             ipa = os.path.join(os.path.abspath(ROOT), os.path.basename(self.path)[:-5] + ".ipa")
             if not os.path.isfile(ipa):
