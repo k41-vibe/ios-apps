@@ -189,6 +189,10 @@ final class Runner {
     static var traceEnabled = false
     /// fork の再現(スタック複製)を使うか。暴れたときに実機から切れるようにしておく
     static var forkCloneEnabled = true
+    /// ドック(下のアプリ一覧)を出すか。出すと画面の下 70 が窓の置けない領域になり、
+    /// 窓の既定の高さ(画面 - 80)が作業領域(画面 - 92)に必ず 12 収まらなくなる。
+    /// 出さなければ作業領域は画面 - 22 になり、窓が収まる。一覧はコンソールの「一覧」から開ける
+    static var dockEnabled = true
 
     let home: String
     let tmp: String
@@ -254,6 +258,12 @@ final class Runner {
             "GSETTINGS_SCHEMA_DIR": schemaDir,
             "GDK_PIXBUF_MODULE_FILE": loadersCachePath,
             "XDG_CACHE_HOME": cacheDir,
+            // 保存先や設定の置き場。渡していないと GLib は既定値を組み立てられず、
+            // gnome-text-editor は書類フォルダが決まらないまま保存に失敗する
+            // (実機 2026-09-14 のログ: improperly configured XDG_DOCUMENTS_DIR)
+            "XDG_DATA_HOME": dataHome,
+            "XDG_CONFIG_HOME": configHome,
+            "XDG_STATE_HOME": stateHome,
             // ioscbg のデスクトップ部品(Storage / Memory / Load / Session)の置き場
             "IOSC_WIDGET_CONFIG": widgetConfigPath,
             // 一覧とドックに出すアプリ(shell-draw.h sd_scan_apps: ここを先に読み、そのあと
@@ -283,11 +293,28 @@ final class Runner {
     var cacheDir: String { home + "/cache" }
     var widgetConfigPath: String { home + "/iosc-widgets.conf" }
     var appsDir: String { home + "/applications" }
+    var dataHome: String { home + "/.local/share" }
+    var configHome: String { home + "/.config" }
+    var stateHome: String { home + "/.local/state" }
+    var documentsDir: String { home + "/Documents" }
 
     private func firstLaunchSetup() {
         let fm = FileManager.default
         // fontconfig は cachedir が無いと作らずに諦める(実機 2026-09-13: "not cleaning non-existent cache directory")
         try? fm.createDirectory(atPath: cacheDir + "/fontconfig", withIntermediateDirectories: true)
+        for d in [dataHome, configHome, stateHome, documentsDir] {
+            try? fm.createDirectory(atPath: d, withIntermediateDirectories: true)
+        }
+        // g_get_user_special_dir は環境変数ではなく user-dirs.dirs だけを読む。
+        // 無いと書類フォルダが NULL になり、保存の経路が途中で止まる
+        let userDirs = configHome + "/user-dirs.dirs"
+        if !fm.fileExists(atPath: userDirs) {
+            let text = ["XDG_DOCUMENTS_DIR=\"$HOME/Documents\"",
+                        "XDG_DOWNLOAD_DIR=\"$HOME/Documents\"",
+                        "XDG_DESKTOP_DIR=\"$HOME/Documents\"", ""].joined(separator: LF)
+            do { try text.write(toFile: userDirs, atomically: true, encoding: .utf8) }
+            catch { log.log("user-dirs.dirs が書けない: \(error.localizedDescription)") }
+        }
 
         // gdk-pixbuf: 積んでいるローダーは SVG の 1 本だけ(PNG/JPEG は本体に内蔵)。
         // 形式は gdk-pixbuf-query-loaders の出力そのもので、モジュールの場所はゲストの
@@ -734,7 +761,11 @@ final class Runner {
         startBackground()
         Thread.sleep(forTimeInterval: 0.3)   // 壁紙を先に map させる(最初のフレームをきれいに)
         startBar()
-        startDock()
+        if Runner.dockEnabled {
+            startDock()
+        } else {
+            log.log("ドックは出さない(窓が下に潜るため)。一覧はコンソールの「一覧」から開ける")
+        }
         log.log("=== セッション: \(status())  [footprint \(footprintMB()) MB] ===")
     }
 
