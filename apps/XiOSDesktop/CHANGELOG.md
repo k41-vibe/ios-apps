@@ -113,6 +113,15 @@
   (build 68 の実測)。この GTK は `gl` も持っており、上流で ngl が落ちるときの回避先がこれ。
   落ちる場合は `cairo` に戻す。変更はこの 1 つだけ
 
+- **保存できない件の下ごしらえ**。`XDG_DATA_HOME` / `XDG_CONFIG_HOME` / `XDG_STATE_HOME` を渡し、
+  `~/.config/user-dirs.dirs` と `~/Documents` を作る。GLib の `g_get_user_special_dir` は環境変数を見ず
+  `user-dirs.dirs` だけを読むため、無いと書類フォルダが NULL になる
+  (実機のログ: improperly configured XDG_DOCUMENTS_DIR、g_file_new_for_path の assertion)
+- **ドックの出し入れを選べるようにした**。窓の既定の高さは「画面の高さ - 80」、作業領域は
+  「画面の高さ - 92」(上の帯 22 とドック 70)で、帯とドックの高さは論理幅 864 から決まる固定値。
+  そのため画面をどの大きさにしても窓が 12 はみ出し、置き場所の余白 40 と合わせて下が 52 ドックに潜る。
+  ドックを出さなければ作業領域が「画面の高さ - 22」になり収まる。一覧はコンソールの「一覧」から開ける
+
 ### Fixed
 - **起動直後に落ちる**(開発ビルド 0.0.20260913、クラッシュレポート `LiveContainer-2026-09-13-020018.ips`)。
   初回起動で生成する gdk-pixbuf の `loaders.cache` に `""` の行を置いていたが、

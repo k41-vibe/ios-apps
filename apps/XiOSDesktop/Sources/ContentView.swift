@@ -175,6 +175,10 @@ struct ContentView: View {
                     get: { ScreenClient.singleFingerIsPointer },
                     set: { ScreenClient.singleFingerIsPointer = $0 }
                 )).font(.footnote).fixedSize()
+                Toggle("ドック", isOn: Binding(
+                    get: { Runner.dockEnabled },
+                    set: { Runner.dockEnabled = $0 }
+                )).font(.footnote).fixedSize()
                 Spacer()
             }
             ScrollViewReader { proxy in
