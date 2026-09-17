@@ -241,11 +241,12 @@ final class Runner {
             "LC_CTYPE": "UTF-8",
             // GTK/GLib のアプリ向け(sd_launch:415-422 と同じ)。壁紙やバーには無害
             "GDK_BACKEND": "wayland",
-            // cairo(ソフト描画)。xiOS 自身が profile.d/10-gtk-renderer.sh で cairo を強制している:
-            // この ANGLE-Metal の土台では GTK4 の GL レンダラー(ngl)が描画中に落ちる
-            // (クラッシュレポート 2026-09-16: gsk_gl_renderer で SIGSEGV)。getenv はプロセスの
-            // 環境を読むので、効くのはここ(procd の envp 上書きは getenv からは見えない)
-            "GSK_RENDERER": "cairo",
+            // gl(古い OpenGL 描画)。ngl は描画中に落ちた(2026-09-16 の SIGSEGV)。
+            // cairo(CPU 描画)は安定だが遅い。この GTK は gl も持っており、上流で ngl が
+            // 落ちるときの定番の回避先がこれ。落ちるようなら cairo に戻す。
+            // 元の指摘: xiOS 自身は profile.d/10-gtk-renderer.sh で cairo を指定している。
+            // getenv はプロセスの環境を読むので、効くのはここ(procd の envp 上書きは見えない)
+            "GSK_RENDERER": "gl",
             "ANGLE_REAL_LIBEGL": "/var/jb/lib/angle/libEGL.angle.dylib",
             "GSETTINGS_BACKEND": "memory",
             "GTK_A11Y": "none",

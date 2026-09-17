@@ -108,6 +108,11 @@
   こちらは ngl にしていた。cairo に合わせる。ゲストは getenv でプロセス環境を読むので、効くのは
   Runner の setenv(procd の envp 配列上書きは getenv から見えず無効だった)
 
+- GTK の描画方式を `cairo` から `gl`(古い OpenGL 描画)に変えて試す。`ngl` は 09-16 に描画中の
+  SIGSEGV を出し、`cairo` は安定したが CPU 描画で、操作中の合成が毎秒 16 から 24 回に留まった
+  (build 68 の実測)。この GTK は `gl` も持っており、上流で ngl が落ちるときの回避先がこれ。
+  落ちる場合は `cairo` に戻す。変更はこの 1 つだけ
+
 ### Fixed
 - **起動直後に落ちる**(開発ビルド 0.0.20260913、クラッシュレポート `LiveContainer-2026-09-13-020018.ips`)。
   初回起動で生成する gdk-pixbuf の `loaders.cache` に `""` の行を置いていたが、
