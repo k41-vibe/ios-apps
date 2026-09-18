@@ -282,19 +282,25 @@ static BOOL LCTSPatchRPath(NSString *path, NSString **error) {
     NSString *mark;
     UIColor *color;
     switch (item.state) {
-        case LCTSStateMissing:  mark = @"未導入";   color = UIColor.systemBlueColor;   break;
-        case LCTSStateOutdated: mark = @"更新あり"; color = UIColor.systemOrangeColor; break;
-        case LCTSStateCurrent:  mark = @"最新";     color = UIColor.secondaryLabelColor; break;
-        default:                mark = @"";        color = UIColor.secondaryLabelColor; break;
+        case LCTSStateMissing:  mark = @"入れる"; color = UIColor.systemBlueColor;     break;
+        case LCTSStateOutdated: mark = @"更新";   color = UIColor.systemOrangeColor;   break;
+        default:                mark = @"";       color = UIColor.secondaryLabelColor; break;
     }
-    cell.textLabel.text = [NSString stringWithFormat:@"%@  (%@)", item.name, mark];
-    cell.textLabel.textColor = color;
-    cell.detailTextLabel.numberOfLines = 0;
-    cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ 用 / %@ に置く\n配布 %@%@",
-                                 item.appName, item.folder, item.build,
-                                 item.localBuild ? [NSString stringWithFormat:@" / 端末 %@", item.localBuild] : @""];
-    cell.accessoryType = (item.state == LCTSStateCurrent) ? UITableViewCellAccessoryNone
-                                                          : UITableViewCellAccessoryDisclosureIndicator;
+    cell.textLabel.text = item.name;
+    cell.detailTextLabel.text = item.appName.length ? item.appName : item.folder;
+
+    // 状態は右端に出す。行の文字数を増やさない
+    if (mark.length) {
+        UILabel *badge = [[UILabel alloc] init];
+        badge.text = mark;
+        badge.textColor = color;
+        badge.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+        [badge sizeToFit];
+        cell.accessoryView = badge;
+    } else {
+        cell.accessoryView = nil;
+    }
+
     return cell;
 }
 

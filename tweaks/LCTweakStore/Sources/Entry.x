@@ -1,11 +1,8 @@
 // 開き方。LiveContainer の画面は SwiftUI なのでボタンを足すのが面倒だが、ジェスチャーなら
-// ウィンドウに付けるだけで済む。2 本指で 0.8 秒の長押しは SCInsta で使っていて誤爆しない。
+// ウィンドウに付けるだけで済む。
 //
-// %hook UIWindow の becomeKeyWindow だけに頼ると付かないことがあった(実機 2026-09-18)。
-// SwiftUI のウィンドウは UIWindowScene 経由で作られ、こちらの hook が呼ばれる保証がない。
-// そこで読み込み直後から一定間隔でウィンドウを探し、見つけたら付けて止める。
-//
-// ゲストアプリに読み込まれても何もしないよう、bundle id を見てから登録する。
+// 判定は %ctor では行わない。TweakLoader は LiveContainerSwiftUI を読む前に動くので、
+// その時点の bundle id が期待どおりとは限らない(実機 2026-09-18)。画面が出来てから見る。
 
 #import "LCTweakStore.h"
 #import <objc/runtime.h>
@@ -13,39 +10,26 @@
 static char kLCTSGestureKey;
 static char kLCTSTabKey;
 
-// 読み込まれた時点では bundle id が何になるか確認できていない。TweakLoader は
-// LiveContainerSwiftUI を読む前に動くので、期待した値とは限らない。ここで弾くと原因が
-// 分からなくなるので、%ctor の時点では判定せず、画面が出来てから見る。
 static BOOL LCTSIsHost(void) {
-    NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"";
-    return [bid isEqualToString:@"com.kdt.livecontainer"] || [bid hasPrefix:@"com.kdt.LiveContainer"];
+    return [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.kdt.livecontainer"];
 }
 
 static void LCTSAttach(UIWindow *window) {
-    if (!window || objc_getAssociatedObject(window, &kLCTSGestureKey)) return;
+    if (!window || !LCTSIsHost() || objc_getAssociatedObject(window, &kLCTSGestureKey)) return;
 
     UILongPressGestureRecognizer *press =
         [[UILongPressGestureRecognizer alloc] initWithTarget:window action:@selector(lcts_handlePress:)];
     press.minimumPressDuration = 0.8;
     press.numberOfTouchesRequired = 2;
-    // SwiftUI 側の操作を邪魔しないよう、こちらは素通しにする
-    press.cancelsTouchesInView = NO;
+    press.cancelsTouchesInView = NO;   // SwiftUI 側の操作を邪魔しない
     [window addGestureRecognizer:press];
     objc_setAssociatedObject(window, &kLCTSGestureKey, press, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    NSLog(@"[LCTweakStore] gesture installed on %@", window);
 }
 
 %hook UIWindow
 
-- (void)becomeKeyWindow {
-    %orig;
-    if (LCTSIsHost()) LCTSAttach(self);
-}
-
-- (void)didMoveToWindow {
-    %orig;
-    if (LCTSIsHost()) LCTSAttach(self);
-}
+- (void)becomeKeyWindow { %orig; LCTSAttach(self); }
+- (void)didMoveToWindow { %orig; LCTSAttach(self); }
 
 %new
 - (void)lcts_handlePress:(UILongPressGestureRecognizer *)sender {
@@ -55,16 +39,12 @@ static void LCTSAttach(UIWindow *window) {
 
 %end
 
-// 「調整」タブのアイコンを長押しで開く。
-//
-// LiveContainer の画面は SwiftUI だが、タブは UIKit の UITabBar として作られるので、
-// そこへ長押しを付けて、押された位置がどのタブかを見る。SwiftUI 側の項目に直接触れずに済む。
+// 「調整」タブの長押し。SwiftUI のタブも UIKit の UITabBar として作られる。
 %hook UITabBar
 
 - (void)didMoveToWindow {
     %orig;
-    if (!LCTSIsHost()) return;
-    if (objc_getAssociatedObject(self, &kLCTSTabKey)) return;
+    if (!LCTSIsHost() || objc_getAssociatedObject(self, &kLCTSTabKey)) return;
 
     UILongPressGestureRecognizer *press =
         [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(lcts_handleTabPress:)];
@@ -72,22 +52,19 @@ static void LCTSAttach(UIWindow *window) {
     press.cancelsTouchesInView = NO;
     [self addGestureRecognizer:press];
     objc_setAssociatedObject(self, &kLCTSTabKey, press, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    NSLog(@"[LCTweakStore] tab gesture installed, items=%lu", (unsigned long)self.items.count);
 }
 
 %new
 - (void)lcts_handleTabPress:(UILongPressGestureRecognizer *)sender {
     if (sender.state != UIGestureRecognizerStateBegan) return;
 
-    // 押された位置にあるのがどの項目か。UITabBar は項目ごとのビューを公開していないので、
-    // 幅を項目数で割って何番目かを出す。タブは等間隔に並ぶ
+    // UITabBar は項目ごとのビューを公開していないので、幅を項目数で割って何番目かを出す
     NSUInteger count = self.items.count;
     if (count == 0) return;
     CGPoint p = [sender locationInView:self];
     NSUInteger index = (NSUInteger)(p.x / (self.bounds.size.width / count));
     if (index >= count) index = count - 1;
 
-    // 「調整」は Tweaks のタブ。並びが変わっても効くよう、まず名前で探す
     NSUInteger target = NSNotFound;
     for (NSUInteger i = 0; i < count; i++) {
         NSString *title = self.items[i].title ?: @"";
@@ -98,7 +75,6 @@ static void LCTSAttach(UIWindow *window) {
     }
     if (target != NSNotFound && index != target) return;
 
-    NSLog(@"[LCTweakStore] tab %lu long pressed", (unsigned long)index);
     [LCTweakStoreViewController presentFrom:self.window];
 }
 
@@ -106,10 +82,7 @@ static void LCTSAttach(UIWindow *window) {
 
 // hook が呼ばれなかった場合の保険。画面が出来上がるのを待って自分で探す。
 static void LCTSPoll(int remaining) {
-    if (remaining <= 0) {
-        NSLog(@"[LCTweakStore] ウィンドウが見つからないまま打ち切り");
-        return;
-    }
+    if (remaining <= 0) return;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         BOOL found = NO;
         for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
@@ -123,56 +96,8 @@ static void LCTSPoll(int remaining) {
     });
 }
 
-// 読み込まれたことを画面で示す。ジェスチャーが反応しない原因が「読み込まれていない」のか
-// 「付いていない」のか、外から見分けがつかなかったので入れた。
-// 一度確認したら LCTweakStoreShowBanner を切れば出なくなる。
-static void LCTSAnnounce(int remaining, NSString *bid) {
-    if (remaining <= 0) return;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UIWindow *key = nil;
-        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-            if (![scene isKindOfClass:UIWindowScene.class]) continue;
-            for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-                if (w.isKeyWindow) { key = w; break; }
-            }
-        }
-        if (!key) { LCTSAnnounce(remaining - 1, bid); return; }
-
-        UILabel *label = [[UILabel alloc] init];
-        label.text = [NSString stringWithFormat:@"LCTweakStore 読み込み済み (%@)。ここを押すと開きます", bid];
-        label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
-        label.textColor = UIColor.whiteColor;
-        label.backgroundColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.92];
-        label.textAlignment = NSTextAlignmentCenter;
-        label.numberOfLines = 0;
-        label.userInteractionEnabled = YES;
-        label.layer.cornerRadius = 10;
-        label.layer.masksToBounds = YES;
-        CGFloat w = key.bounds.size.width - 24;
-        label.frame = CGRectMake(12, key.safeAreaInsets.top + 8, w, 44);
-        [label addGestureRecognizer:
-            [[UITapGestureRecognizer alloc] initWithTarget:key action:@selector(lcts_openFromBanner:)]];
-        [key addSubview:label];
-        NSLog(@"[LCTweakStore] banner shown");
-    });
-}
-
-%hook UIWindow
-%new
-- (void)lcts_openFromBanner:(UITapGestureRecognizer *)sender {
-    [sender.view removeFromSuperview];
-    [LCTweakStoreViewController presentFrom:(UIWindow *)self];
-}
-%end
-
 __attribute__((constructor))
 static void LCTweakStoreInit(void) {
-    NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"(なし)";
-    NSLog(@"[LCTweakStore] loaded in %@", bid);
-    // ここで bundle id を見て弾かない。値が期待どおりか確認できていないので、
-    // まず必ず動かして、帯に実際の値を出す
+    // ここで bundle id を見ても当てにならない。ウィンドウが出来てから LCTSAttach が判定する
     LCTSPoll(20);
-    if (![NSUserDefaults.standardUserDefaults boolForKey:@"LCTweakStoreHideBanner"]) {
-        LCTSAnnounce(20, bid);
-    }
 }
