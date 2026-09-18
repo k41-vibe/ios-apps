@@ -1,7 +1,6 @@
 Package: dev.rutoi.lctweakstore
 Name: LCTweakStore
 Version: 1.0.0
-Architecture: iphoneos-arm64
 Description: LiveContainer の中から tweak の dylib を配布サーバー経由で入れ替える
 Maintainer: rutoi
 Author: rutoi
