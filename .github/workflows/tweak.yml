@@ -1,0 +1,85 @@
+# tweaks/<名前>/ の theos プロジェクトを rootless .deb として組み、dylib だけ取り出して上げる。
+#
+# LiveContainer は .deb を受け取らない(LCTweaksView の importer は .dylib と .framework のみ)ので、
+# 配るのは中の dylib。rootless(iphoneos-arm64)でないと CydiaSubstrate の参照先が
+# /Library/Frameworks/... になって LiveContainer では解決できない。
+name: Build tweak
+
+on:
+  workflow_dispatch:
+    inputs:
+      name:
+        description: tweaks/ 以下のディレクトリ名
+        required: true
+        default: LCTweakStore
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.name }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install make ldid dpkg
+
+      - name: Set PATH
+        run: |
+          echo "$(brew --prefix make)/libexec/gnubin" >> $GITHUB_PATH
+          echo "THEOS=${{ github.workspace }}/theos" >> $GITHUB_ENV
+
+      - name: Cache Theos
+        id: theos
+        uses: actions/cache@v4
+        env:
+          cache-name: theos_cache_344ee59
+        with:
+          path: theos/
+          key: ${{ env.cache-name }}
+          restore-keys: ${{ env.cache-name }}
+
+      - name: Setup Theos
+        if: steps.theos.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: theos/theos
+          ref: 344ee5925df036dbd1312b783ad5a00d153c2445
+          path: theos
+          submodules: recursive
+
+      - name: Download iOS SDK
+        if: steps.theos.outputs.cache-hit != 'true'
+        run: |
+          git clone --quiet -n --depth=1 --filter=tree:0 https://github.com/theos/sdks.git
+          cd sdks
+          git sparse-checkout set --no-cone iPhoneOS16.5.sdk
+          git checkout
+          mv *.sdk $THEOS/sdks
+
+      - name: Build
+        run: |
+          cd tweaks/${{ inputs.name }}
+          make clean package DEBUG=0 FINALPACKAGE=1 ROOTLESS=1
+          ls -la packages/
+
+      # rootful(iphoneos-arm)を掴むと CydiaSubstrate の参照先が変わって LiveContainer で読めない。
+      # ここで名指しして取り出し、依存も表示して確認できるようにする
+      - name: Extract dylib
+        run: |
+          cd tweaks/${{ inputs.name }}
+          deb=$(ls packages/*_iphoneos-arm64.deb)
+          echo "deb: $deb"
+          mkdir -p out extract
+          cd extract && ar x "../$deb" && tar xf data.tar.* && cd ..
+          find extract -name '*.dylib' -exec cp {} out/ \;
+          ls -la out/
+          otool -l out/*.dylib | grep -A2 LC_LOAD_DYLIB | grep name || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.name }}-dylib
+          path: tweaks/${{ inputs.name }}/out/*.dylib
+          if-no-files-found: error
