@@ -19,8 +19,10 @@
 #import <dlfcn.h>
 #import <mach-o/loader.h>
 
-static NSString *const kSourceURL = @"https://node.tail1f41c8.ts.net:8789/source.json";
+// LAN を先に試す。Tailscale は LocalDevVPN と同時に使えず(iOS は VPN 構成を 1 つしか
+// 有効にできない)、自宅では切れていることが多い。名前解決の失敗を待つと数秒無駄になる。
 static NSString *const kSourceURLLAN = @"http://192.168.10.113:8788/source.json";
+static NSString *const kSourceURL = @"https://node.tail1f41c8.ts.net:8789/source.json";
 
 @implementation LCTSItem
 @end
@@ -135,7 +137,7 @@ static BOOL LCTSPatchRPath(NSString *path, NSString **error) {
 - (void)reload {
     [self setStatusText:@"配布サーバーを見ています"];
     // Tailscale と LAN の両方を順に試す。片方しか届かない状況があるため
-    [self fetchSourceFrom:@[kSourceURL, kSourceURLLAN] index:0];
+    [self fetchSourceFrom:@[kSourceURLLAN, kSourceURL] index:0];
 }
 
 - (void)fetchSourceFrom:(NSArray<NSString *> *)urls index:(NSUInteger)index {
@@ -148,6 +150,8 @@ static BOOL LCTSPatchRPath(NSString *path, NSString **error) {
     [[self.session dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *resp, NSError *error) {
         NSInteger code = [(NSHTTPURLResponse *)resp statusCode];
         if (error || code != 200 || data.length == 0) {
+            [self setStatusText:[NSString stringWithFormat:@"%@ に届きません(%@)。次を試します",
+                                 url.host, error.localizedDescription ?: [NSString stringWithFormat:@"HTTP %ld", (long)code]]];
             [self fetchSourceFrom:urls index:index + 1];
             return;
         }
