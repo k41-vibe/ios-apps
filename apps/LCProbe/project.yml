@@ -10,6 +10,9 @@ targets:
     platform: iOS
     sources:
       - Sources
+      # アプリ内アップデート(shared/Updater.swift)。他のアプリも同じ 1 行で載る
+      - path: ../../shared
+        name: shared
     info:
       path: Info.plist
       properties:

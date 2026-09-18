@@ -33,6 +33,9 @@ final class ProbeLog: ObservableObject {
 
     func previous() -> String { (try? String(contentsOf: fileURL, encoding: .utf8)) ?? "" }
 
+    /// UpdaterLog の要求。log() が毎回 fsync しているので、ここですることはない
+    func sync() {}
+
     func clearFile() {
         try? fh?.truncate(atOffset: 0)
         DispatchQueue.main.async { self.text = "" }
@@ -44,6 +47,8 @@ final class ProbeLog: ObservableObject {
         return f.string(from: Date())
     }
 }
+
+extension ProbeLog: UpdaterLog {}
 
 // phys_footprint(iOS が jetsam 判定に使う値)を MB で返す
 func footprintMB() -> Int {
