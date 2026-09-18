@@ -201,12 +201,13 @@ enum Probes {
         munmap(p, size)
     }
 
-    // JIT が有る場合と無い場合で、同じ計算にどれだけ時間差が出るか。
+    // JIT が使えるときと使えないときで、同じ計算にどれだけ時間差が出るか。
     //
-    // jitProbe は「実行可能にできるか」しか答えない。エミュレーターが JIT から得るものは、
-    // 命令を機械語に変換して直接実行できることなので、そこを直接測る。
+    // iOS 26 で JIT の許し方が変わった。26 より前はデバッガが接続していればプロセス全体で
+    // 許されたが(CS_DEBUGGED)、26 以降はアプリが領域を申告して個別にもらう方式になっている。
+    // 申告は shared/JITBrk.S の brk 命令で行い、StikDebug がそれに応じる。
     //
-    //   生成した機械語 : add w0,w0,#1 を K 個並べて呼ぶ。JIT が無いと実行できない
+    //   生成した機械語 : add w0,w0,#1 を K 個並べて呼ぶ。もらった領域でしか実行できない
     //   解釈実行       : 同じ K 個の命令を配列から 1 つずつ読んで分岐で処理する。JIT 不要
     //
     // 出る比は上限であって、エミュレーターの実際の速度差ではない。ここで並べているのは
@@ -236,54 +237,44 @@ enum Probes {
         L.log(String(format: "解釈実行: %.2f ns/命令 (合計 %.0f ms, acc=%d)",
                      interpNs / total, interpNs / 1_000_000, acc))
 
-        // --- 生成した機械語 ---
+        // --- StikDebug が応じるか ---
+        // 接続していなくても JITBrk 側の SIGTRAP 処理が拾うので、ここで落ちることはない
+        guard JITBrkIsAttached() != 0 else {
+            L.log("StikDebug が応じない。JIT は使えない")
+            L.log("LiveContainer のアプリ設定で「JIT で起動」を入れ、StikDebug を共有アプリにして")
+            L.log("両方をマルチタスクにする。LocalDevVPN も繋いでおくこと")
+            return
+        }
+        L.log("StikDebug が応じた。領域を要求する")
+
         var code = [UInt32](repeating: 0x1100_0400, count: instructions) // add w0, w0, #1
         code.append(0xD65F_03C0)                                          // ret
         let codeBytes = code.count * 4
         let pageSize = Int(getpagesize())
         let size = (codeBytes + pageSize - 1) / pageSize * pageSize
 
-        // 実行の可否は必ず先に確かめる。mmap に実行の許可を付けた要求は、許されていなくても
-        // 成功して返ってくるので、それを根拠に呼ぶと落ちる。
-        let debugged = processIsDebugged()
-        switch debugged {
-        case .some(true):  L.log("デバッガ接続あり (CS_DEBUGGED)。JIT が許される状態")
-        case .some(false): L.log("デバッガ接続なし。JIT は許されていない")
-        case nil:          L.log("csops が拒否された。デバッガの有無を判定できない")
+        var region = JITBrkAllocate(size)
+        guard let rw = region.rw, let rx = region.rx else {
+            L.log("領域をもらえなかった。StikDebug のスクリプトが universal 系か確認する")
+            return
         }
+        defer { JITBrkRelease(&region) }
+        L.log(String(format: "領域: 書き込み用 %p / 実行用 %p (%d B)", rw, rx, size))
 
-        let page = mmap(nil, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0)
-        guard page != MAP_FAILED, let p = page else {
-            L.log("mmap RW failed errno \(errno)。測定を中止")
-            return
-        }
-        code.withUnsafeBytes { memcpy(p, $0.baseAddress, codeBytes) }
-
-        if mprotect(p, size, PROT_READ | PROT_EXEC) != 0 {
-            L.log("mprotect RW->RX failed errno \(errno)。JIT は効いていない")
-            L.log("比較できるのは解釈実行だけ。エミュレーターは同じ条件で動くことになる")
-            munmap(p, size)
-            return
-        }
-        if debugged == false {
-            L.log("mprotect は通ったが、デバッガが付いていないので実行はしない")
-            L.log("この状態で呼ぶと KERN_PROTECTION_FAILURE でプロセスごと終わる")
-            munmap(p, size)
-            return
-        }
+        // 書ける address に置き、実行できる address から呼ぶ。同じ物理ページを指している
+        code.withUnsafeBytes { memcpy(rw, $0.baseAddress, codeBytes) }
         if let inv = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "sys_icache_invalidate") {
             typealias Inv = @convention(c) (UnsafeMutableRawPointer, Int) -> Void
-            unsafeBitCast(inv, to: Inv.self)(p, codeBytes)
+            unsafeBitCast(inv, to: Inv.self)(rx, codeBytes)
         }
 
         typealias Fn = @convention(c) (Int32) -> Int32
-        let fn = unsafeBitCast(p, to: Fn.self)
+        let fn = unsafeBitCast(rx, to: Fn.self)
 
         // 書いたとおりに動いているかを先に確かめる。ここが合わないと時間に意味がない
         let check = fn(0)
         guard check == Int32(instructions) else {
             L.log("生成した機械語の戻り値が \(check)、期待は \(instructions)。測定を中止")
-            munmap(p, size)
             return
         }
 
@@ -291,13 +282,13 @@ enum Probes {
         let jitStart = clock_gettime_nsec_np(CLOCK_MONOTONIC)
         for _ in 0..<iterations { jitAcc = fn(jitAcc) }
         let jitNs = Double(clock_gettime_nsec_np(CLOCK_MONOTONIC) - jitStart)
-        munmap(p, size)
 
         L.log(String(format: "生成した機械語: %.2f ns/命令 (合計 %.0f ms, acc=%d)",
                      jitNs / total, jitNs / 1_000_000, jitAcc))
         L.log(String(format: "比: %.1f 倍", interpNs / jitNs))
-        L.log("JIT は効いている")
+        L.log("JIT は使えている")
     }
+
 
     // socketpair の往復時間と、パス付き Unix ソケットの bind/connect
     static func sockets(_ L: ProbeLog) {
