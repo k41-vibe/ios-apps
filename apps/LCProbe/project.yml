@@ -39,4 +39,7 @@ targets:
         CODE_SIGNING_ALLOWED: "NO"
         CODE_SIGNING_REQUIRED: "NO"
         ENABLE_BITCODE: "NO"
+        # shared/JITBrk.h を Swift から見えるようにする
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/LCProbe-Bridging-Header.h
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/../../shared"
         LD_RUNPATH_SEARCH_PATHS: "@executable_path/Frameworks"
