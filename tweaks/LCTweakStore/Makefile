@@ -1,5 +1,8 @@
 TARGET := iphone:clang:latest:15.0
 ARCHS = arm64
+# LiveContainer が同梱する CydiaSubstrate は @rpath 参照なので rootless でないと解決できない。
+# ROOTLESS=1 は theos の変数ではないので、ここで対応付ける
+THEOS_PACKAGE_SCHEME = rootless
 
 include $(THEOS)/makefiles/common.mk
 
