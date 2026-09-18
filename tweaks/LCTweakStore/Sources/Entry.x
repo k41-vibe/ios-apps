@@ -13,8 +13,12 @@
 static char kLCTSGestureKey;
 static char kLCTSTabKey;
 
+// 読み込まれた時点では bundle id が何になるか確認できていない。TweakLoader は
+// LiveContainerSwiftUI を読む前に動くので、期待した値とは限らない。ここで弾くと原因が
+// 分からなくなるので、%ctor の時点では判定せず、画面が出来てから見る。
 static BOOL LCTSIsHost(void) {
-    return [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.kdt.livecontainer"];
+    NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"";
+    return [bid isEqualToString:@"com.kdt.livecontainer"] || [bid hasPrefix:@"com.kdt.LiveContainer"];
 }
 
 static void LCTSAttach(UIWindow *window) {
@@ -122,7 +126,7 @@ static void LCTSPoll(int remaining) {
 // 読み込まれたことを画面で示す。ジェスチャーが反応しない原因が「読み込まれていない」のか
 // 「付いていない」のか、外から見分けがつかなかったので入れた。
 // 一度確認したら LCTweakStoreShowBanner を切れば出なくなる。
-static void LCTSAnnounce(int remaining) {
+static void LCTSAnnounce(int remaining, NSString *bid) {
     if (remaining <= 0) return;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIWindow *key = nil;
@@ -132,10 +136,10 @@ static void LCTSAnnounce(int remaining) {
                 if (w.isKeyWindow) { key = w; break; }
             }
         }
-        if (!key) { LCTSAnnounce(remaining - 1); return; }
+        if (!key) { LCTSAnnounce(remaining - 1, bid); return; }
 
         UILabel *label = [[UILabel alloc] init];
-        label.text = @"LCTweakStore 読み込み済み。ここを押すと開きます";
+        label.text = [NSString stringWithFormat:@"LCTweakStore 読み込み済み (%@)。ここを押すと開きます", bid];
         label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
         label.textColor = UIColor.whiteColor;
         label.backgroundColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.92];
@@ -161,12 +165,14 @@ static void LCTSAnnounce(int remaining) {
 }
 %end
 
-%ctor {
-    %init;
-    NSLog(@"[LCTweakStore] loaded in %@", NSBundle.mainBundle.bundleIdentifier);
-    if (!LCTSIsHost()) return;
+__attribute__((constructor))
+static void LCTweakStoreInit(void) {
+    NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"(なし)";
+    NSLog(@"[LCTweakStore] loaded in %@", bid);
+    // ここで bundle id を見て弾かない。値が期待どおりか確認できていないので、
+    // まず必ず動かして、帯に実際の値を出す
     LCTSPoll(20);
     if (![NSUserDefaults.standardUserDefaults boolForKey:@"LCTweakStoreHideBanner"]) {
-        LCTSAnnounce(20);
+        LCTSAnnounce(20, bid);
     }
 }
