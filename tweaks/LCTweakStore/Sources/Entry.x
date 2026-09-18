@@ -11,6 +11,7 @@
 #import <objc/runtime.h>
 
 static char kLCTSGestureKey;
+static char kLCTSTabKey;
 
 static BOOL LCTSIsHost(void) {
     return [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.kdt.livecontainer"];
@@ -46,6 +47,55 @@ static void LCTSAttach(UIWindow *window) {
 - (void)lcts_handlePress:(UILongPressGestureRecognizer *)sender {
     if (sender.state != UIGestureRecognizerStateBegan) return;
     [LCTweakStoreViewController presentFrom:(UIWindow *)self];
+}
+
+%end
+
+// 「調整」タブのアイコンを長押しで開く。
+//
+// LiveContainer の画面は SwiftUI だが、タブは UIKit の UITabBar として作られるので、
+// そこへ長押しを付けて、押された位置がどのタブかを見る。SwiftUI 側の項目に直接触れずに済む。
+%hook UITabBar
+
+- (void)didMoveToWindow {
+    %orig;
+    if (!LCTSIsHost()) return;
+    if (objc_getAssociatedObject(self, &kLCTSTabKey)) return;
+
+    UILongPressGestureRecognizer *press =
+        [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(lcts_handleTabPress:)];
+    press.minimumPressDuration = 0.5;
+    press.cancelsTouchesInView = NO;
+    [self addGestureRecognizer:press];
+    objc_setAssociatedObject(self, &kLCTSTabKey, press, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSLog(@"[LCTweakStore] tab gesture installed, items=%lu", (unsigned long)self.items.count);
+}
+
+%new
+- (void)lcts_handleTabPress:(UILongPressGestureRecognizer *)sender {
+    if (sender.state != UIGestureRecognizerStateBegan) return;
+
+    // 押された位置にあるのがどの項目か。UITabBar は項目ごとのビューを公開していないので、
+    // 幅を項目数で割って何番目かを出す。タブは等間隔に並ぶ
+    NSUInteger count = self.items.count;
+    if (count == 0) return;
+    CGPoint p = [sender locationInView:self];
+    NSUInteger index = (NSUInteger)(p.x / (self.bounds.size.width / count));
+    if (index >= count) index = count - 1;
+
+    // 「調整」は Tweaks のタブ。並びが変わっても効くよう、まず名前で探す
+    NSUInteger target = NSNotFound;
+    for (NSUInteger i = 0; i < count; i++) {
+        NSString *title = self.items[i].title ?: @"";
+        if ([title isEqualToString:@"調整"] || [title localizedCaseInsensitiveContainsString:@"tweak"]) {
+            target = i;
+            break;
+        }
+    }
+    if (target != NSNotFound && index != target) return;
+
+    NSLog(@"[LCTweakStore] tab %lu long pressed", (unsigned long)index);
+    [LCTweakStoreViewController presentFrom:self.window];
 }
 
 %end
