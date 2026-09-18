@@ -119,8 +119,54 @@ static void LCTSPoll(int remaining) {
     });
 }
 
+// 読み込まれたことを画面で示す。ジェスチャーが反応しない原因が「読み込まれていない」のか
+// 「付いていない」のか、外から見分けがつかなかったので入れた。
+// 一度確認したら LCTweakStoreShowBanner を切れば出なくなる。
+static void LCTSAnnounce(int remaining) {
+    if (remaining <= 0) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIWindow *key = nil;
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if (![scene isKindOfClass:UIWindowScene.class]) continue;
+            for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+                if (w.isKeyWindow) { key = w; break; }
+            }
+        }
+        if (!key) { LCTSAnnounce(remaining - 1); return; }
+
+        UILabel *label = [[UILabel alloc] init];
+        label.text = @"LCTweakStore 読み込み済み。ここを押すと開きます";
+        label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+        label.textColor = UIColor.whiteColor;
+        label.backgroundColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.92];
+        label.textAlignment = NSTextAlignmentCenter;
+        label.numberOfLines = 0;
+        label.userInteractionEnabled = YES;
+        label.layer.cornerRadius = 10;
+        label.layer.masksToBounds = YES;
+        CGFloat w = key.bounds.size.width - 24;
+        label.frame = CGRectMake(12, key.safeAreaInsets.top + 8, w, 44);
+        [label addGestureRecognizer:
+            [[UITapGestureRecognizer alloc] initWithTarget:key action:@selector(lcts_openFromBanner:)]];
+        [key addSubview:label];
+        NSLog(@"[LCTweakStore] banner shown");
+    });
+}
+
+%hook UIWindow
+%new
+- (void)lcts_openFromBanner:(UITapGestureRecognizer *)sender {
+    [sender.view removeFromSuperview];
+    [LCTweakStoreViewController presentFrom:(UIWindow *)self];
+}
+%end
+
 %ctor {
     %init;
     NSLog(@"[LCTweakStore] loaded in %@", NSBundle.mainBundle.bundleIdentifier);
-    if (LCTSIsHost()) LCTSPoll(20);
+    if (!LCTSIsHost()) return;
+    LCTSPoll(20);
+    if (![NSUserDefaults.standardUserDefaults boolForKey:@"LCTweakStoreHideBanner"]) {
+        LCTSAnnounce(20);
+    }
 }
