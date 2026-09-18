@@ -71,6 +71,20 @@ static BOOL LCTSPatchRPath(NSString *path, NSString **error) {
 //
 // LiveContainer と同じ ZSigner を使う。ZSign.dylib は LiveContainer 起動時には読まれて
 // いないので自分で dlopen する(LCUtils.loadStoreFrameworksWithError2 と同じ経路)。
+// ZSigner の型。LiveContainer の中にあるクラスなので、こちらで宣言して直接呼ぶ
+@interface ZSigner : NSObject
++ (NSProgress *)signMachOPathArr:(NSArray *)paths
+                        bundleId:(NSString *)bundleId
+                            cert:(NSData *)cert
+                            pass:(NSString *)pass
+               completionHandler:(void (^)(BOOL success, NSError *error))handler;
+@end
+
+@interface LCSharedUtils : NSObject
++ (NSString *)appGroupID;
++ (NSString *)certificatePassword;
+@end
+
 static BOOL LCTSSign(NSString *path, NSString **error) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -78,39 +92,28 @@ static BOOL LCTSSign(NSString *path, NSString **error) {
     });
 
     Class signer = NSClassFromString(@"ZSigner");
-    if (!signer) { *error = @"ZSigner が読めない"; return NO; }
+    Class shared = NSClassFromString(@"LCSharedUtils");
+    if (!signer || !shared) { *error = @"ZSigner が読めない"; return NO; }
 
-    NSUserDefaults *shared = [[NSUserDefaults alloc] initWithSuiteName:
-        [NSClassFromString(@"LCSharedUtils") performSelector:@selector(appGroupID)]];
-    NSData *cert = [shared objectForKey:@"LCCertificateData"]
+    NSUserDefaults *group = [[NSUserDefaults alloc] initWithSuiteName:[shared appGroupID]];
+    NSData *cert = [group objectForKey:@"LCCertificateData"]
                  ?: [NSUserDefaults.standardUserDefaults objectForKey:@"LCCertificateData"];
-    NSString *pass = [NSClassFromString(@"LCSharedUtils") performSelector:@selector(certificatePassword)];
+    NSString *pass = [shared certificatePassword];
     if (!cert || !pass) { *error = @"証明書が無い"; return NO; }
 
-    // 署名は非同期で返るので、終わるまで待つ。押したあとすぐ使える状態にしたい
+    // 署名は非同期で返るので終わるまで待つ。押したあとすぐ使える状態にしたい
     __block BOOL ok = NO;
     __block NSString *failure = nil;
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
-    SEL sel = @selector(signMachOPathArr:bundleId:cert:pass:completionHandler:);
-    NSMethodSignature *sig = [signer methodSignatureForSelector:sel];
-    if (!sig) { *error = @"ZSigner の署名処理が見つからない"; return NO; }
-
-    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-    inv.target = signer;
-    inv.selector = sel;
-    NSArray *paths = @[path];
-    NSString *bundleId = NSBundle.mainBundle.bundleIdentifier;
-    void (^handler)(BOOL, NSError *) = ^(BOOL success, NSError *err) {
+    [signer signMachOPathArr:@[path]
+                    bundleId:NSBundle.mainBundle.bundleIdentifier
+                        cert:cert
+                        pass:pass
+           completionHandler:^(BOOL success, NSError *err) {
         ok = success;
         failure = err.localizedDescription;
         dispatch_semaphore_signal(done);
-    };
-    [inv setArgument:&paths forIndex:2];
-    [inv setArgument:&bundleId forIndex:3];
-    [inv setArgument:&cert forIndex:4];
-    [inv setArgument:&pass forIndex:5];
-    [inv setArgument:&handler forIndex:6];
-    [inv invoke];
+    }];
 
     if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(120 * NSEC_PER_SEC))) != 0) {
         *error = @"署名が終わらない";
@@ -119,6 +122,7 @@ static BOOL LCTSSign(NSString *path, NSString **error) {
     if (!ok) *error = failure ?: @"署名に失敗";
     return ok;
 }
+
 
 #pragma mark - 一覧
 
