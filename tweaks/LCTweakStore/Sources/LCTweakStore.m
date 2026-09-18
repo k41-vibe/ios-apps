@@ -63,6 +63,63 @@ static BOOL LCTSPatchRPath(NSString *path, NSString **error) {
     return touched;
 }
 
+// 置いた dylib に署名する。
+//
+// ゲストアプリ向けの tweak なら、対象アプリを起動するときに LiveContainer が署名するので
+// 何もしなくてよい。LCTweakStore 自身は LiveContainer の起動時に読まれるため、署名より先に
+// 読み込みが来る。そのままだと次の起動で code signature invalid になり、何も読まれない。
+//
+// LiveContainer と同じ ZSigner を使う。ZSign.dylib は LiveContainer 起動時には読まれて
+// いないので自分で dlopen する(LCUtils.loadStoreFrameworksWithError2 と同じ経路)。
+static BOOL LCTSSign(NSString *path, NSString **error) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        dlopen("@executable_path/Frameworks/ZSign.dylib", RTLD_GLOBAL);
+    });
+
+    Class signer = NSClassFromString(@"ZSigner");
+    if (!signer) { *error = @"ZSigner が読めない"; return NO; }
+
+    NSUserDefaults *shared = [[NSUserDefaults alloc] initWithSuiteName:
+        [NSClassFromString(@"LCSharedUtils") performSelector:@selector(appGroupID)]];
+    NSData *cert = [shared objectForKey:@"LCCertificateData"]
+                 ?: [NSUserDefaults.standardUserDefaults objectForKey:@"LCCertificateData"];
+    NSString *pass = [NSClassFromString(@"LCSharedUtils") performSelector:@selector(certificatePassword)];
+    if (!cert || !pass) { *error = @"証明書が無い"; return NO; }
+
+    // 署名は非同期で返るので、終わるまで待つ。押したあとすぐ使える状態にしたい
+    __block BOOL ok = NO;
+    __block NSString *failure = nil;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    SEL sel = @selector(signMachOPathArr:bundleId:cert:pass:completionHandler:);
+    NSMethodSignature *sig = [signer methodSignatureForSelector:sel];
+    if (!sig) { *error = @"ZSigner の署名処理が見つからない"; return NO; }
+
+    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+    inv.target = signer;
+    inv.selector = sel;
+    NSArray *paths = @[path];
+    NSString *bundleId = NSBundle.mainBundle.bundleIdentifier;
+    void (^handler)(BOOL, NSError *) = ^(BOOL success, NSError *err) {
+        ok = success;
+        failure = err.localizedDescription;
+        dispatch_semaphore_signal(done);
+    };
+    [inv setArgument:&paths forIndex:2];
+    [inv setArgument:&bundleId forIndex:3];
+    [inv setArgument:&cert forIndex:4];
+    [inv setArgument:&pass forIndex:5];
+    [inv setArgument:&handler forIndex:6];
+    [inv invoke];
+
+    if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(120 * NSEC_PER_SEC))) != 0) {
+        *error = @"署名が終わらない";
+        return NO;
+    }
+    if (!ok) *error = failure ?: @"署名に失敗";
+    return ok;
+}
+
 #pragma mark - 一覧
 
 @interface LCTweakStoreViewController () <UITableViewDataSource, UITableViewDelegate>
@@ -254,6 +311,11 @@ static BOOL LCTSPatchRPath(NSString *path, NSString **error) {
     [fm removeItemAtPath:dest error:nil];
     if (![fm moveItemAtPath:staging toPath:dest error:&error]) {
         [self failed:item reason:error.localizedDescription]; return;
+    }
+
+    NSString *signError = nil;
+    if (!LCTSSign(dest, &signError)) {
+        [self setStatusText:[NSString stringWithFormat:@"%@ 配置済み。署名は手動で (%@)", item.name, signError]];
     }
 
     [self recordSourceDigestFor:item];
