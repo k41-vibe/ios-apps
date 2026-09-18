@@ -1,9 +1,8 @@
 {
-    /* 読み込む相手。LiveContainer 自身だけを対象にする。
-       LiveContainer は「Load Tweaks to LiveContainer Itself」を有効にすると、グローバルの
-       調整フォルダに置いた dylib を自分にも読み込む。ゲストアプリにも読み込まれるが、
-       Entry.x の側で bundle id を見て何もしないようにしてある。 */
+    /* 読み込む相手の指定。bundle id で絞ると、LiveContainer が自分自身へ読み込む経路で
+       弾かれる可能性があったので、UIKit を使うプロセス全体に広げてある。
+       ゲストアプリに読み込まれても、Entry.x が bundle id を見て何もしない。 */
     Filter = {
-        Bundles = ( "com.kdt.livecontainer" );
+        Bundles = ( "com.apple.UIKit" );
     };
 }
