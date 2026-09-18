@@ -259,7 +259,8 @@ enum Probes {
             return
         }
         defer { JITBrkRelease(&region) }
-        L.log(String(format: "領域: 書き込み用 %p / 実行用 %p (%d B)", rw, rx, size))
+        L.log(String(format: "領域: 書き込み用 0x%llx / 実行用 0x%llx (%d B)",
+                     UInt64(UInt(bitPattern: rw)), UInt64(UInt(bitPattern: rx)), size))
 
         // 書ける address に置き、実行できる address から呼ぶ。同じ物理ページを指している
         code.withUnsafeBytes { memcpy(rw, $0.baseAddress, codeBytes) }
