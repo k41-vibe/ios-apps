@@ -172,6 +172,97 @@ enum Probes {
         munmap(p, size)
     }
 
+    // JIT が有る場合と無い場合で、同じ計算にどれだけ時間差が出るか。
+    //
+    // jitProbe は「実行可能にできるか」しか答えない。エミュレーターが JIT から得るものは、
+    // 命令を機械語に変換して直接実行できることなので、そこを直接測る。
+    //
+    //   生成した機械語 : add w0,w0,#1 を K 個並べて呼ぶ。JIT が無いと実行できない
+    //   解釈実行       : 同じ K 個の命令を配列から 1 つずつ読んで分岐で処理する。JIT 不要
+    //
+    // 出る比は上限であって、エミュレーターの実際の速度差ではない。ここで並べているのは
+    // メモリ参照もフラグ更新も無い最も単純な命令なので、解釈実行側の不利が最大に出る。
+    static func jitBenchmark(_ L: ProbeLog) {
+        L.log("=== jit benchmark ===")
+        let instructions = 1024          // 1 回の呼び出しで実行する命令数
+        let iterations = 20_000          // 呼び出し回数
+        let total = Double(instructions * iterations)
+
+        // --- 解釈実行。JIT の有無に関わらず動く ---
+        // 配列から読ませることで、命令列を定数に畳み込まれないようにする
+        let program = [UInt8](repeating: 0, count: instructions)
+        var acc: Int32 = 0
+        let interpStart = clock_gettime_nsec_np(CLOCK_MONOTONIC)
+        for _ in 0..<iterations {
+            var i = 0
+            while i < instructions {
+                switch program[i] {
+                case 0: acc &+= 1
+                default: break
+                }
+                i += 1
+            }
+        }
+        let interpNs = Double(clock_gettime_nsec_np(CLOCK_MONOTONIC) - interpStart)
+        L.log(String(format: "解釈実行: %.2f ns/命令 (合計 %.0f ms, acc=%d)",
+                     interpNs / total, interpNs / 1_000_000, acc))
+
+        // --- 生成した機械語 ---
+        var code = [UInt32](repeating: 0x1100_0400, count: instructions) // add w0, w0, #1
+        code.append(0xD65F_03C0)                                          // ret
+        let codeBytes = code.count * 4
+        let pageSize = Int(getpagesize())
+        let size = (codeBytes + pageSize - 1) / pageSize * pageSize
+
+        // 実行可能なメモリの取り方は 2 通りある。デバッガが付いていれば最初から RWX で取れる。
+        // 取れなければ RW で取って書き込み、あとから実行可能に変える。
+        var page = mmap(nil, size, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANON, -1, 0)
+        var viaMprotect = false
+        if page == MAP_FAILED {
+            page = mmap(nil, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0)
+            viaMprotect = true
+        }
+        guard page != MAP_FAILED, let p = page else {
+            L.log("実行可能メモリを確保できない errno \(errno)。JIT 無しと判定")
+            return
+        }
+        code.withUnsafeBytes { memcpy(p, $0.baseAddress, codeBytes) }
+
+        if viaMprotect, mprotect(p, size, PROT_READ | PROT_EXEC) != 0 {
+            L.log("mprotect RW->RX failed errno \(errno)。JIT は効いていない")
+            L.log("比較できるのは解釈実行だけ。エミュレーターは同じ条件で動くことになる")
+            munmap(p, size)
+            return
+        }
+        if let inv = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "sys_icache_invalidate") {
+            typealias Inv = @convention(c) (UnsafeMutableRawPointer, Int) -> Void
+            unsafeBitCast(inv, to: Inv.self)(p, codeBytes)
+        }
+
+        typealias Fn = @convention(c) (Int32) -> Int32
+        let fn = unsafeBitCast(p, to: Fn.self)
+
+        // 書いたとおりに動いているかを先に確かめる。ここが合わないと時間に意味がない
+        let check = fn(0)
+        guard check == Int32(instructions) else {
+            L.log("生成した機械語の戻り値が \(check)、期待は \(instructions)。測定を中止")
+            munmap(p, size)
+            return
+        }
+
+        var jitAcc: Int32 = 0
+        let jitStart = clock_gettime_nsec_np(CLOCK_MONOTONIC)
+        for _ in 0..<iterations { jitAcc = fn(jitAcc) }
+        let jitNs = Double(clock_gettime_nsec_np(CLOCK_MONOTONIC) - jitStart)
+        munmap(p, size)
+
+        L.log(String(format: "生成した機械語: %.2f ns/命令 (合計 %.0f ms, acc=%d)",
+                     jitNs / total, jitNs / 1_000_000, jitAcc))
+        L.log(String(format: "比: %.1f 倍 (%@ で実行可能にした)",
+                     interpNs / jitNs, viaMprotect ? "mprotect" : "mmap RWX"))
+        L.log("JIT は効いている")
+    }
+
     // socketpair の往復時間と、パス付き Unix ソケットの bind/connect
     static func sockets(_ L: ProbeLog) {
         L.log("=== sockets ===")

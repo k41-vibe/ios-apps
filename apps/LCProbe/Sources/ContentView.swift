@@ -17,6 +17,7 @@ struct ContentView: View {
             }
             HStack {
                 Button("JIT/W^X") { run { Probes.jitProbe(log) } }.buttonStyle(.bordered).disabled(busy)
+                Button("JIT速度") { run { Probes.jitBenchmark(log) } }.buttonStyle(.bordered).disabled(busy)
                 Button("スレッド上限") { run { Probes.threads(log) } }.buttonStyle(.bordered).disabled(busy)
                 Button("メモリ上限(落ちる)", role: .destructive) { run { Probes.memoryUntilKill(log) } }
                     .buttonStyle(.bordered).disabled(busy)
