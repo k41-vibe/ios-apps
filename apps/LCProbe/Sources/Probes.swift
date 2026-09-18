@@ -59,6 +59,9 @@ func footprintMB() -> Int {
 
 // os_proc_available_memory: jetsam までに使える残量(iOS 13+)。モジュール依存を避けてシンボル直結。
 @_silgen_name("os_proc_available_memory") private func c_os_proc_available_memory() -> Int
+
+@_silgen_name("csops")
+private func c_csops(_ pid: pid_t, _ ops: UInt32, _ useraddr: UnsafeMutableRawPointer?, _ usersize: Int) -> Int32
 func availableMB() -> Int { c_os_proc_available_memory() / 1_048_576 }
 
 enum Probes {
@@ -142,6 +145,23 @@ enum Probes {
         }
     }
 
+    // このプロセスにデバッガが付いているか。
+    //
+    // JIT を許すのはこの状態で、StikDebug がやっているのも「デバッガとして接続する」ことである。
+    // mmap に実行の許可を付けた要求は、許されていなくても成功して返ってくる。拒否されるのは実際に
+    // 実行した瞬間で、そのときは KERN_PROTECTION_FAILURE でプロセスごと終わる(実機 2026-09-18)。
+    // 書いたメモリを呼ぶ前には必ずここを見る。
+    //
+    // 戻り値が nil なのは csops 自体が拒否された場合で、判定できないことを意味する。
+    static func processIsDebugged() -> Bool? {
+        var flags: UInt32 = 0
+        let ok = withUnsafeMutablePointer(to: &flags) { p -> Bool in
+            c_csops(getpid(), 0 /* CS_OPS_STATUS */, UnsafeMutableRawPointer(p), MemoryLayout<UInt32>.size) == 0
+        }
+        guard ok else { return nil }
+        return (flags & 0x1000_0000) != 0 // CS_DEBUGGED
+    }
+
     // 書いたメモリを実行できるか。mprotect が拒否されるだけで落ちない設計。
     static func jitProbe(_ L: ProbeLog) {
         L.log("=== jit / W^X ===")
@@ -160,6 +180,10 @@ enum Probes {
         let r = mprotect(p, size, PROT_READ | PROT_EXEC)
         if r != 0 {
             L.log("mprotect RW->RX failed errno \(errno) (no JIT: expected in JIT-less mode)")
+            munmap(p, size); return
+        }
+        if processIsDebugged() == false {
+            L.log("mprotect RX ok だが CS_DEBUGGED が立っていないので実行しない(呼ぶと落ちる)")
             munmap(p, size); return
         }
         if let inv = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "sys_icache_invalidate") {
@@ -214,23 +238,31 @@ enum Probes {
         let pageSize = Int(getpagesize())
         let size = (codeBytes + pageSize - 1) / pageSize * pageSize
 
-        // 実行可能なメモリの取り方は 2 通りある。デバッガが付いていれば最初から RWX で取れる。
-        // 取れなければ RW で取って書き込み、あとから実行可能に変える。
-        var page = mmap(nil, size, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANON, -1, 0)
-        var viaMprotect = false
-        if page == MAP_FAILED {
-            page = mmap(nil, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0)
-            viaMprotect = true
+        // 実行の可否は必ず先に確かめる。mmap に実行の許可を付けた要求は、許されていなくても
+        // 成功して返ってくるので、それを根拠に呼ぶと落ちる。
+        let debugged = processIsDebugged()
+        switch debugged {
+        case .some(true):  L.log("デバッガ接続あり (CS_DEBUGGED)。JIT が許される状態")
+        case .some(false): L.log("デバッガ接続なし。JIT は許されていない")
+        case nil:          L.log("csops が拒否された。デバッガの有無を判定できない")
         }
+
+        let page = mmap(nil, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0)
         guard page != MAP_FAILED, let p = page else {
-            L.log("実行可能メモリを確保できない errno \(errno)。JIT 無しと判定")
+            L.log("mmap RW failed errno \(errno)。測定を中止")
             return
         }
         code.withUnsafeBytes { memcpy(p, $0.baseAddress, codeBytes) }
 
-        if viaMprotect, mprotect(p, size, PROT_READ | PROT_EXEC) != 0 {
+        if mprotect(p, size, PROT_READ | PROT_EXEC) != 0 {
             L.log("mprotect RW->RX failed errno \(errno)。JIT は効いていない")
             L.log("比較できるのは解釈実行だけ。エミュレーターは同じ条件で動くことになる")
+            munmap(p, size)
+            return
+        }
+        if debugged == false {
+            L.log("mprotect は通ったが、デバッガが付いていないので実行はしない")
+            L.log("この状態で呼ぶと KERN_PROTECTION_FAILURE でプロセスごと終わる")
             munmap(p, size)
             return
         }
@@ -258,8 +290,7 @@ enum Probes {
 
         L.log(String(format: "生成した機械語: %.2f ns/命令 (合計 %.0f ms, acc=%d)",
                      jitNs / total, jitNs / 1_000_000, jitAcc))
-        L.log(String(format: "比: %.1f 倍 (%@ で実行可能にした)",
-                     interpNs / jitNs, viaMprotect ? "mprotect" : "mmap RWX"))
+        L.log(String(format: "比: %.1f 倍", interpNs / jitNs))
         L.log("JIT は効いている")
     }
 
