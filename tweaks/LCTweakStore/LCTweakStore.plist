@@ -1,0 +1,9 @@
+{
+    /* 読み込む相手。LiveContainer 自身だけを対象にする。
+       LiveContainer は「Load Tweaks to LiveContainer Itself」を有効にすると、グローバルの
+       調整フォルダに置いた dylib を自分にも読み込む。ゲストアプリにも読み込まれるが、
+       Entry.x の側で bundle id を見て何もしないようにしてある。 */
+    Filter = {
+        Bundles = ( "com.kdt.livecontainer" );
+    };
+}
