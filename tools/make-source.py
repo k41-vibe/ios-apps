@@ -31,18 +31,21 @@ DEFAULT_BASE = "https://node.tail1f41c8.ts.net:8789"
 # フォルダ名は端末側で作ったものに合わせる必要がある。
 TWEAKS = {
     "YouMod.dylib": {
+        "folder": "youtube",   # 端末側の調整フォルダ名。LCTweakStore がここへ置く
         "name": "YouMod",
         "app": "YouTube",
         "bundleIdentifier": "com.google.ios.youtube",
         "description": "YouTube の広告除去・SponsorBlock・ダウンロード・日本語設定",
     },
     "YTMusicUltimate.dylib": {
+        "folder": "youtubemusic",   # 端末側の調整フォルダ名。LCTweakStore がここへ置く
         "name": "YTMusicUltimate",
         "app": "YouTube Music",
         "bundleIdentifier": "com.google.ios.youtubemusic",
         "description": "YouTube Music の広告除去・音源とカバーの保存・日本語設定",
     },
     "SCInsta.dylib": {
+        "folder": "instagram",   # 端末側の調整フォルダ名。LCTweakStore がここへ置く
         "name": "SCInsta",
         "app": "Instagram",
         "bundleIdentifier": "com.burbn.instagram",
@@ -130,6 +133,7 @@ def main():
             "name": meta["name"],
             "file": dylib.name,
             "app": meta["app"],
+            "folder": meta["folder"],
             "bundleIdentifier": meta["bundleIdentifier"],
             "localizedDescription": meta["description"],
             # 中身が変わったときだけ変わる。ビルド時の定義を持たせなくて済む。
