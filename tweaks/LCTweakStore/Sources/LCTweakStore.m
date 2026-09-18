@@ -42,7 +42,6 @@ static NSString *LCTSDigest(NSData *data) {
 // LiveContainer が取り込み時にやっているのと同じ補正。
 // LCParseMachO(path, false, ^(path, header, ...){ LCPatchAddRPath(path, header); })
 static BOOL LCTSPatchRPath(NSString *path, NSString **error) {
-    typedef void (*ParseCallback)(const char *path, struct mach_header_64 *header, void *a, void *b);
     typedef void (*ParseFn)(const char *path, bool readOnly, void (^cb)(const char *, struct mach_header_64 *, void *, void *));
     typedef void (*PatchFn)(const char *path, struct mach_header_64 *header);
 
