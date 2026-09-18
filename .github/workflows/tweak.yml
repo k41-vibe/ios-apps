@@ -78,8 +78,15 @@ jobs:
           ls -la out/
           otool -l out/*.dylib | grep -A2 LC_LOAD_DYLIB | grep name || true
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ inputs.name }}-dylib
-          path: tweaks/${{ inputs.name }}/out/*.dylib
-          if-no-files-found: error
+      # 成果物の保存枠は ipa で埋まりやすいので、リリースに上げる。
+      # そのままダウンロード先の URL にもなる
+      - name: Publish to rolling prerelease
+        working-directory: tweaks/${{ inputs.name }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="dev-tweak-${{ inputs.name }}"
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --prerelease --title "$tag" \
+              --notes "${{ inputs.name }} の最新 dylib(rootless)。LiveContainer の調整フォルダに置く。"
+          gh release upload "$tag" out/*.dylib --clobber
