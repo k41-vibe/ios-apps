@@ -201,6 +201,12 @@ final class Runner {
     /// 代わりに画面の下端から上へ払うと一覧(ホーム画面 + 開いている窓)が出る。
     /// 窓がはみ出す・ドックに隠れるという不具合は、全画面にすると原理的に起きない
     static var ipadMode = true
+    /// GTK の描画方式。cairo は CPU、gl は ANGLE 経由の Metal。速さの比較用に切り替える
+    static var gskRenderer = "gl"
+    static let gskChoices = ["cairo", "gl"]
+    /// 出力の倍率。2 なら論理 864x378 を 1728x756 で描き、画面へ引き伸ばす。
+    /// 1 にすると描く画素が 1/4 になり、その分ぼやける。iosc を起こす前に決めること
+    static var outputScale = 2
     /// 上のバー(時計・電池)。iOS の状態バーが画面の上に既に出ているので既定は切る。
     /// 全画面の窓はバーの下に潜り込み、ヘッダのボタンが 22 分隠れる
     static var barEnabled = false
@@ -265,7 +271,7 @@ final class Runner {
             // 落ちるときの定番の回避先がこれ。落ちるようなら cairo に戻す。
             // 元の指摘: xiOS 自身は profile.d/10-gtk-renderer.sh で cairo を指定している。
             // getenv はプロセスの環境を読むので、効くのはここ(procd の envp 上書きは見えない)
-            "GSK_RENDERER": "gl",
+            "GSK_RENDERER": Runner.gskRenderer,
             "ANGLE_REAL_LIBEGL": "/var/jb/lib/angle/libEGL.angle.dylib",
             "GSETTINGS_BACKEND": "memory",
             "GTK_A11Y": "none",
@@ -436,6 +442,9 @@ final class Runner {
         for (k, v) in environment() { setenv(k, v, 1) }
         unsetenv("LANG")
         unsetenv("LC_ALL")
+        // 作業ディレクトリはプロセスで 1 つ。既定のままだと "/" で、書けない場所を
+        // ファイル選択の初期位置にしてしまう。HOME に移しておく
+        if !fm.changeCurrentDirectoryPath(home) { log.log("作業ディレクトリを \(home) にできない") }
 
         var fds: [Int32] = [-1, -1]
         guard pipe(&fds) == 0 else { log.log("pipe failed errno \(errno)"); return false }
@@ -607,7 +616,7 @@ final class Runner {
     // ソケット類の既定値は /var/jb/tmp/... なので、全部こちらの tmp 配下に明示する。
     func ioscArgv() -> [String] {
         [Self.ioscPath,
-         "-classic", "-logical", Self.logicalArg(), "-scale", "2", "-dpi", "96",
+         "-classic", "-logical", Self.logicalArg(), "-scale", "\(Self.outputScale)", "-dpi", "96",
          "-s", "wayland-0",
          "-ddx-sock", xiosDir + "/ddx",
          "-json", xiosDir + "/j.json",
@@ -782,6 +791,48 @@ final class Runner {
             startOverview()          // 最初に出るのはホーム画面(アプリの一覧)
         }
         log.log("=== セッション: \(status())  [footprint \(footprintMB()) MB] ===")
+    }
+
+    /// gnome-text-editor の記録を消す。一度 admin:// に書き換えられた文書
+    /// (editor-document.c:1157 が場所を差し替える)は、その URI が session と
+    /// draft に残るので、権限を直しても同じ誤りが出続ける。消してから試す
+    func clearEditorState() {
+        let dir = dataHome + "/gnome-text-editor"
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: dir) else { log.log("エディタの記録: \(dir) は無い"); return }
+        let items = (try? fm.contentsOfDirectory(atPath: dir)) ?? []
+        log.log("エディタの記録を消す: \(dir)(\(items.count) 件: \(items.joined(separator: ", ")))")
+        do { try fm.removeItem(atPath: dir); log.log("エディタの記録: 消した") }
+        catch { log.log("エディタの記録: 消せない: \(error.localizedDescription)") }
+    }
+
+    /// 保存が「サポートしていない操作です」で止まる原因を分ける試験。
+    /// この文言は glib 2.78 の gfile.c が、GFile の実装を持たない相手
+    /// (GDummyFile)に対して出すもの。GDummyFile が作られる条件は 2 つで、
+    /// 空の経路(glocalvfs.c:86)と、g_filename_from_uri が解釈できない URI
+    /// (glocalvfs.c:126)。経路と URI のどちらで折れるかをここで分ける。
+    func runGioTests() {
+        guard setup() else { log.log("GIO 試験: setup 失敗"); return }
+        let gio = "/var/jb/usr/bin/gio"
+        let src = home + "/gio-src.txt", dst = home + "/gio-dst.txt"
+        do { try "gio test".write(toFile: src, atomically: true, encoding: .utf8) }
+        catch { log.log("GIO 試験: 元ファイルが書けない: \(error.localizedDescription)"); return }
+        for f in [dst, dst + "2"] { try? FileManager.default.removeItem(atPath: f) }
+        log.log("=== GIO 試験 開始(元 \(src)) ===")
+        let cases: [(String, [String])] = [
+            ("経路で情報", [gio, "info", src]),
+            ("経路で複製", [gio, "copy", src, dst]),
+            ("URI で情報", [gio, "info", "file://" + src]),
+            ("URI で複製", [gio, "copy", "file://" + src, "file://" + dst + "2"]),
+        ]
+        for (name, argv) in cases {
+            let r = run(argv)
+            log.log("GIO 試験 \(name): status=\(r.status) (\(r.ms) ms)")
+        }
+        for f in [dst, dst + "2"] {
+            log.log("GIO 試験 結果 \(f): \(FileManager.default.fileExists(atPath: f) ? "出来た" : "出来ていない")")
+        }
+        log.log("=== GIO 試験 おわり ===")
     }
 
     /// 試験用の「全部入り」。どれが出てどれが出ないかを 1 回で見るためのもの。

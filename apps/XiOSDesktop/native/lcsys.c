@@ -164,6 +164,20 @@ int lcsys_init(const char *bundle_path, const char *home, const char *tmp, int l
 
 #define MAPPED(in, buf) (lcsys_ready ? lcsys_resolve_path((in), (buf), sizeof(buf)) : (in))
 
+
+/* 書き込みが許可で弾かれたときだけ記録する。gnome-text-editor は保存が
+ * G_IO_ERROR_PERMISSION_DENIED になると admin:// で再試行し(editor-document.c:1149)、
+ * その admin:// を扱う VFS が無いので以後この文書のすべての操作が
+ * 「サポートしていない操作です」になる。表に出るのは 2 回目の誤りなので、
+ * 1 回目の errno と経路をここで残す。頻度は低いので常時入れておく。 */
+static void lcsys_note_denied(const char *fn, const char *guest, const char *host, int e)
+{
+    if (e != EACCES && e != EPERM && e != EROFS && e != ENOTSUP && e != EISDIR)
+        return;
+    lcsys_log("書き込み拒否 %s(%s) -> %s: errno=%d %s",
+              fn, guest ? guest : "(null)", host ? host : "(null)", e, strerror(e));
+}
+
 int open(const char *path, int oflag, ...)
 {
     char buf[LCSYS_PATH_MAX];
@@ -175,7 +189,13 @@ int open(const char *path, int oflag, ...)
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
-    return lcsys_real.open(MAPPED(path, buf), oflag, mode);
+    {
+        const char *m = MAPPED(path, buf);
+        int r = lcsys_real.open(m, oflag, mode);
+        if (r < 0 && (oflag & (O_WRONLY | O_RDWR | O_CREAT)))
+            lcsys_note_denied("open", path, m, errno);
+        return r;
+    }
 }
 
 /* A lookup relative to a real directory fd cannot go through lcsys_resolve_path:
@@ -916,15 +936,26 @@ int rmdir(const char *path)
 int unlink(const char *path)
 {
     char buf[LCSYS_PATH_MAX];
+    const char *m;
+    int r;
     ENSURE();
-    return lcsys_real.unlink(MAPPED(path, buf));
+    m = MAPPED(path, buf);
+    r = lcsys_real.unlink(m);
+    if (r < 0) lcsys_note_denied("unlink", path, m, errno);
+    return r;
 }
 
 int rename(const char *from, const char *to)
 {
     char a[LCSYS_PATH_MAX], b[LCSYS_PATH_MAX];
+    const char *ma, *mb;
+    int r;
     ENSURE();
-    return lcsys_real.rename(MAPPED(from, a), MAPPED(to, b));
+    ma = MAPPED(from, a);
+    mb = MAPPED(to, b);
+    r = lcsys_real.rename(ma, mb);
+    if (r < 0) lcsys_note_denied("rename", to, mb, errno);
+    return r;
 }
 
 /* mkstemp 系: 雛形(末尾 XXXXXX)を書き換えて返す関数なので、写した経路で本物を呼び、
@@ -988,8 +1019,13 @@ char *mkdtemp(char *tmpl)
 int chmod(const char *path, mode_t mode)
 {
     char buf[LCSYS_PATH_MAX];
+    const char *m;
+    int r;
     ENSURE();
-    return lcsys_real.chmod(MAPPED(path, buf), mode);
+    m = MAPPED(path, buf);
+    r = lcsys_real.chmod(m, mode);
+    if (r < 0) lcsys_note_denied("chmod", path, m, errno);
+    return r;
 }
 
 int chdir(const char *path)
