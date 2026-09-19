@@ -196,7 +196,14 @@ final class Runner {
     /// ドック(下のアプリ一覧)を出すか。出すと画面の下 70 が窓の置けない領域になり、
     /// 窓の既定の高さ(画面 - 80)が作業領域(画面 - 92)に必ず 12 収まらなくなる。
     /// 出さなければ作業領域は画面 - 22 になり、窓が収まる。一覧はコンソールの「一覧」から開ける
-    static var dockEnabled = true
+    static var dockEnabled = false
+    /// iPadOS に寄せた使い勝手。窓を全画面にして、バーもドックも出さない。
+    /// 代わりに画面の下端から上へ払うと一覧(ホーム画面 + 開いている窓)が出る。
+    /// 窓がはみ出す・ドックに隠れるという不具合は、全画面にすると原理的に起きない
+    static var ipadMode = true
+    /// 上のバー(時計・電池)。iOS の状態バーが画面の上に既に出ているので既定は切る。
+    /// 全画面の窓はバーの下に潜り込み、ヘッダのボタンが 22 分隠れる
+    static var barEnabled = false
 
     let home: String
     let tmp: String
@@ -240,6 +247,10 @@ final class Runner {
             "LCSYS_TRACE": Runner.traceEnabled ? "1" : "0",
             // fork をスタック複製で再現する。"fail" にすると従来どおり -1 を返す
             "LCSYS_FORK": Runner.forkCloneEnabled ? "clone" : "fail",
+            // 全画面。既定の窓寸法(画面 - 80)は作業領域に収まらず、置き場所の余白 40 と
+            // 合わせて下へはみ出す(wayland_iosc.c default_window_w/h)。全画面ならこの
+            // 計算が関与しない。layer-shell(バー・一覧)と popup(メニュー)は対象外
+            "IOSC_FULLSCREEN_TOPLEVELS": Runner.ipadMode ? "1" : "0",
             "IOSC_IGNORE_ACTIVE_SESSION": "1",   // /var/jb/tmp/xios-active-session は読めない
             "XIOS_RUNTIME_TMP": runtimeDir,      // クライアント側のログ置き場 (XSurface.c)
             "XDG_DATA_DIRS": "/var/jb/usr/share:/var/jb/usr/local/share",
@@ -764,11 +775,11 @@ final class Runner {
         guard ensureIoscReady() else { log.log("セッション: iosc を起こせなかった"); return }
         startBackground()
         Thread.sleep(forTimeInterval: 0.3)   // 壁紙を先に map させる(最初のフレームをきれいに)
-        startBar()
-        if Runner.dockEnabled {
-            startDock()
-        } else {
-            log.log("ドックは出さない(窓が下に潜るため)。一覧はコンソールの「一覧」から開ける")
+        if Runner.barEnabled { startBar() }
+        if Runner.dockEnabled { startDock() }
+        if Runner.ipadMode {
+            log.log("iPadOS 風: 窓は全画面。下端から上へ払うと一覧が出る")
+            startOverview()          // 最初に出るのはホーム画面(アプリの一覧)
         }
         log.log("=== セッション: \(status())  [footprint \(footprintMB()) MB] ===")
     }

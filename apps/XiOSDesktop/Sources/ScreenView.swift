@@ -172,6 +172,9 @@ final class ScreenClient: NSObject, MTKViewDelegate {
     //   - enable で出す、disable で 0.2 秒待ってから下げる(欄から欄への移動で上下させない)
     //   - 使う人が自分で下げたキーボードは、その欄を離れるまで自動では出さない
     private var traitsSeq: UInt = 0
+    /// 最後に指が触れた時刻。欄の焦点がこの直後に動いたときだけキーボードを出す
+    private var lastTapAt: CFTimeInterval = 0
+    static let oskAfterTapSeconds: CFTimeInterval = 1.5
     private var oskAutoShown = false
     private var oskUserDismissed = false
     private var oskProgrammaticResign = false
@@ -466,7 +469,8 @@ final class ScreenClient: NSObject, MTKViewDelegate {
         lastTraitsEnabled = enabled
         if enabled != 0 {
             oskHideWork?.cancel(); oskHideWork = nil
-            if !v.isFirstResponder && !oskUserDismissed {
+            let tapped = CACurrentMediaTime() - lastTapAt < Self.oskAfterTapSeconds
+            if !v.isFirstResponder && !oskUserDismissed && tapped {
                 if v.becomeFirstResponder() { oskAutoShown = true }
             }
         } else {
@@ -534,6 +538,59 @@ final class ScreenClient: NSObject, MTKViewDelegate {
     /// iosc の interactive_update はポインタの MOTION でしか進まないため、窓移動はこちら)
     static var singleFingerIsPointer = false
 
+    // ------------------------------------------------------------ ホーム操作
+    /// 下端から上へ払うと一覧(ホーム画面 + 開いている窓)を出す。iPadOS のホーム操作。
+    /// iOS 自身のホームインジケータはビューの外(下の安全領域)に居るので取り合いにならない
+    /// (ContentView は .ignoresSafeArea(edges: .horizontal) だけを指定している)。
+    static var homeGestureEnabled = true
+    static let homeStripPt: CGFloat = 30      // 下端からこの範囲で始めた指だけを見る
+    static let homeTravelPt: CGFloat = 60     // これだけ上へ動いたら成立
+    private var homeTouch: ObjectIdentifier?
+    private var homeStart: CGPoint = .zero
+    private var homeFiredAt: CFTimeInterval = 0
+    /// 一覧を起こすのに要る。ContentView が画面を開くときに入れる
+    weak var runner: Runner?
+
+    /// 戻り値 true = ホーム操作として使ったので、この呼び出しはアプリへ送らない
+    private func homeGesture(_ touches: Set<UITouch>, phase: Int32, in view: MTKView, total: Int) -> Bool {
+        guard Self.homeGestureEnabled else { return false }
+        switch phase {
+        case 1:
+            homeTouch = nil
+            guard total == 1, let t = touches.first else { return false }
+            let p = t.location(in: view)
+            if p.y >= view.bounds.height - Self.homeStripPt {
+                homeTouch = ObjectIdentifier(t)
+                homeStart = p
+            }
+            return false
+        case 2:
+            guard let h = homeTouch,
+                  let t = touches.first(where: { ObjectIdentifier($0) == h }) else { return false }
+            let p = t.location(in: view)
+            let up = homeStart.y - p.y
+            guard up >= Self.homeTravelPt, up > abs(p.x - homeStart.x) else { return false }
+            homeTouch = nil
+            // 送り始めた分を取り消す。GTK は wl_touch.cancel を受けて途中の操作を戻す
+            if Self.singleFingerIsPointer { endPointer() }
+            else { sendTouch([t], phase: 3, view: view, newOnly: false) }
+            openHome()
+            return true
+        default:
+            if let h = homeTouch, touches.contains(where: { ObjectIdentifier($0) == h }) { homeTouch = nil }
+            return false
+        }
+    }
+
+    private func openHome() {
+        let now = CACurrentMediaTime()
+        guard now - homeFiredAt > 1.0 else { return }   // 連続で払っても 1 本だけ起こす
+        homeFiredAt = now
+        guard let r = runner else { log.log("操作: 一覧を開けない(Runner が無い)"); return }
+        log.log("操作: 下端から上へ払った。一覧を開く")
+        Thread { r.startOverview() }.start()   // startClient は 1.5 秒眠るので主スレッドでは呼ばない
+    }
+
     private func cancelLongPress() { longPressWork?.cancel(); longPressWork = nil }
 
     private func fireLongPress() {
@@ -578,6 +635,13 @@ final class ScreenClient: NSObject, MTKViewDelegate {
         guard let conn = inputConn, let xin = xin else { return }
         let all = event?.allTouches ?? touches
         let total = all.count
+        if homeGesture(touches, phase: phase, in: view, total: total) { return }
+        if phase == 1 { lastTapAt = CACurrentMediaTime() }
+        // 欄に触ったのにキーボードが出ていない(自分で閉じたあと)なら、この指で出し直す
+        if phase == 0, lastTraitsEnabled != 0, let v = self.view, !v.isFirstResponder {
+            oskUserDismissed = false
+            if v.becomeFirstResponder() { oskAutoShown = true }
+        }
         guard Self.singleFingerIsPointer else {
             sendTouch(touches, phase: phase, view: view, newOnly: false)
             return
