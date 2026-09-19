@@ -22,6 +22,10 @@ static void LCTSAttach(UIWindow *window) {
     press.minimumPressDuration = 0.8;
     press.numberOfTouchesRequired = 2;
     press.cancelsTouchesInView = NO;   // SwiftUI 側の操作を邪魔しない
+    press.delaysTouchesBegan = NO;
+    press.delaysTouchesEnded = NO;
+    // 他の認識と同時に成立させる。iOS 26 は長押しを先に取ることがある
+    press.delegate = (id<UIGestureRecognizerDelegate>)window;
     [window addGestureRecognizer:press];
     objc_setAssociatedObject(window, &kLCTSGestureKey, press, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
@@ -32,6 +36,12 @@ static void LCTSAttach(UIWindow *window) {
 - (void)didMoveToWindow { %orig; LCTSAttach(self); }
 
 %new
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)a
+shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
+    return YES;
+}
+
+%new
 - (void)lcts_handlePress:(UILongPressGestureRecognizer *)sender {
     if (sender.state != UIGestureRecognizerStateBegan) return;
     [LCTweakStoreViewController presentFrom:(UIWindow *)self];
@@ -40,6 +50,9 @@ static void LCTSAttach(UIWindow *window) {
 %end
 
 // 「調整」タブの長押し。SwiftUI のタブも UIKit の UITabBar として作られる。
+//
+// iOS 26 のタブバーは長押しを自分で処理するので、こちらの認識まで届かない(実機 2026-09-19)。
+// 同時に成立することを許し、さらに他より先に判定させる。
 %hook UITabBar
 
 - (void)didMoveToWindow {
@@ -50,8 +63,22 @@ static void LCTSAttach(UIWindow *window) {
         [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(lcts_handleTabPress:)];
     press.minimumPressDuration = 0.5;
     press.cancelsTouchesInView = NO;
+    press.delaysTouchesBegan = NO;
+    press.delaysTouchesEnded = NO;
+    press.delegate = (id<UIGestureRecognizerDelegate>)self;
     [self addGestureRecognizer:press];
+
+    // 標準の認識より先に判定させる。これをしないと、タブバー側が先に取って終わる
+    for (UIGestureRecognizer *other in self.gestureRecognizers) {
+        if (other != press) [other requireGestureRecognizerToFail:press];
+    }
     objc_setAssociatedObject(self, &kLCTSTabKey, press, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+%new
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)a
+shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
+    return YES;
 }
 
 %new
