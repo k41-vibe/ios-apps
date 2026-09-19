@@ -130,6 +130,7 @@ static BOOL LCTSSign(NSString *path, NSString **error) {
 @property (nonatomic, strong) UITableView *table;
 @property (nonatomic, strong) UILabel *status;
 @property (nonatomic, strong) NSArray<LCTSItem *> *items;
+@property (nonatomic, strong) NSArray<NSString *> *strays;
 @property (nonatomic, strong) NSURLSession *session;
 @end
 
@@ -241,6 +242,7 @@ static BOOL LCTSSign(NSString *path, NSString **error) {
             [items addObject:item];
         }
         self.items = items;
+        self.strays = [self findStrays:items];
         dispatch_async(dispatch_get_main_queue(), ^{ [self.table reloadData]; });
         [self setStatusText:[NSString stringWithFormat:@"%@ から %lu 件\n置き先: %@",
                              url.host, (unsigned long)items.count, LCTSTweaksRoot()]];
@@ -269,6 +271,29 @@ static BOOL LCTSSign(NSString *path, NSString **error) {
 }
 - (void)recordSourceDigestFor:(LCTSItem *)item {
     [[NSUserDefaults standardUserDefaults] setObject:item.sha256 forKey:[self recordKey:item]];
+}
+
+/// 配布に載っていない dylib を Tweaks の下から拾う。
+///
+/// 過去に SCInsta-v8.dylib のような版番号つきの名前で置いたものが残っていると、LiveContainer は
+/// フォルダ内の dylib を全部読み込むので古い方も動く。名前が違うので置き換えでは消えない。
+- (NSArray<NSString *> *)findStrays:(NSArray<LCTSItem *> *)items {
+    NSMutableSet *known = [NSMutableSet set];
+    for (LCTSItem *item in items) {
+        [known addObject:[item.folder.length ? [item.folder stringByAppendingPathComponent:item.file] : item.file
+                          lowercaseString]];
+    }
+    NSString *root = LCTSTweaksRoot();
+    NSMutableArray *out = [NSMutableArray array];
+    NSDirectoryEnumerator *walk = [NSFileManager.defaultManager enumeratorAtPath:root];
+    for (NSString *rel in walk) {
+        NSString *name = rel.lastPathComponent;
+        if (![name.pathExtension isEqualToString:@"dylib"]) continue;
+        if ([name isEqualToString:@"TweakLoader.dylib"]) continue;   // LiveContainer のもの
+        if ([known containsObject:rel.lowercaseString]) continue;
+        [out addObject:rel];
+    }
+    return [out sortedArrayUsingSelector:@selector(compare:)];
 }
 
 #pragma mark - 取り込み
@@ -312,8 +337,19 @@ static BOOL LCTSSign(NSString *path, NSString **error) {
         [self failed:item reason:patchError]; return;
     }
 
-    [fm removeItemAtPath:dest error:nil];
-    if (![fm moveItemAtPath:staging toPath:dest error:&error]) {
+    // 消してから移す形だと、読み込み中で消せなかったときに移動が「同じ名前がある」で失敗する。
+    // replaceItemAtURL は置き換えを 1 回で行うので、その隙間が無い(実機 2026-09-19)。
+    if (![fm fileExistsAtPath:dest]) {
+        if (![fm moveItemAtPath:staging toPath:dest error:&error]) {
+            [self failed:item reason:error.localizedDescription]; return;
+        }
+    } else if (![fm replaceItemAtURL:[NSURL fileURLWithPath:dest]
+                       withItemAtURL:[NSURL fileURLWithPath:staging]
+                      backupItemName:nil
+                             options:0
+                    resultingItemURL:nil
+                               error:&error]) {
+        [fm removeItemAtPath:staging error:nil];
         [self failed:item reason:error.localizedDescription]; return;
     }
 
@@ -336,13 +372,36 @@ static BOOL LCTSSign(NSString *path, NSString **error) {
 
 #pragma mark - 表
 
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
+    return self.strays.count ? 2 : 1;
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    return section == 0 ? nil : @"配布にないファイル";
+}
+
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return self.items.count;
+    return section == 0 ? self.items.count : self.strays.count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"c"];
     if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"c"];
+
+    // 端末に残っている、配布に載っていないファイル。過去に版番号つきの名前で置いたものが該当する
+    if (indexPath.section == 1) {
+        NSString *rel = self.strays[indexPath.row];
+        cell.textLabel.text = rel.lastPathComponent;
+        cell.detailTextLabel.text = rel.stringByDeletingLastPathComponent;
+        UILabel *badge = [[UILabel alloc] init];
+        badge.text = @"削除";
+        badge.textColor = UIColor.systemRedColor;
+        badge.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+        [badge sizeToFit];
+        cell.accessoryView = badge;
+        return cell;
+    }
+
     LCTSItem *item = self.items[indexPath.row];
 
     NSString *mark;
@@ -372,6 +431,29 @@ static BOOL LCTSSign(NSString *path, NSString **error) {
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+
+    if (indexPath.section == 1) {
+        NSString *rel = self.strays[indexPath.row];
+        UIAlertController *alert = [UIAlertController
+            alertControllerWithTitle:rel.lastPathComponent
+                             message:@"削除する"
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"削除" style:UIAlertActionStyleDestructive
+                                                handler:^(UIAlertAction *a) {
+            NSString *full = [LCTSTweaksRoot() stringByAppendingPathComponent:rel];
+            NSError *err = nil;
+            if ([NSFileManager.defaultManager removeItemAtPath:full error:&err]) {
+                [self setStatusText:[NSString stringWithFormat:@"%@ 削除", rel.lastPathComponent]];
+                [self reload];
+            } else {
+                [self setStatusText:err.localizedDescription];
+            }
+        }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"キャンセル" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+
     LCTSItem *item = self.items[indexPath.row];
     NSString *title = (item.state == LCTSStateCurrent) ? @"入れ直しますか" : @"入れますか";
     UIAlertController *alert = [UIAlertController
