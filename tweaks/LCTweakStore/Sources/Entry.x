@@ -14,6 +14,8 @@ static BOOL LCTSIsHost(void) {
     return [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.kdt.livecontainer"];
 }
 
+static void LCTSAddButton(UIWindow *window);
+
 static void LCTSAttach(UIWindow *window) {
     if (!window || !LCTSIsHost() || objc_getAssociatedObject(window, &kLCTSGestureKey)) return;
 
@@ -32,8 +34,8 @@ static void LCTSAttach(UIWindow *window) {
 
 %hook UIWindow
 
-- (void)becomeKeyWindow { %orig; LCTSAttach(self); }
-- (void)didMoveToWindow { %orig; LCTSAttach(self); }
+- (void)becomeKeyWindow { %orig; LCTSAttach(self); LCTSAddButton(self); }
+- (void)didMoveToWindow { %orig; LCTSAttach(self); LCTSAddButton(self); }
 
 %new
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)a
@@ -107,6 +109,49 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
 
 %end
 
+// 画面に常に出しておくボタン。
+//
+// ジェスチャーは iOS 26 のタブバーと SwiftUI に取られて届かなかった(実機 2026-09-19)。
+// ウィンドウの上に重ねるだけなら、SwiftUI の構造にも他の操作にも干渉しない。
+static char kLCTSButtonKey;
+
+static void LCTSAddButton(UIWindow *window) {
+    if (!window || !LCTSIsHost() || objc_getAssociatedObject(window, &kLCTSButtonKey)) return;
+
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    [button setTitle:@"T" forState:UIControlStateNormal];
+    button.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBold];
+    [button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    button.backgroundColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.85];
+    button.layer.cornerRadius = 22;
+    button.frame = CGRectMake(window.bounds.size.width - 60,
+                              window.bounds.size.height - 160, 44, 44);
+    button.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleTopMargin;
+    [button addTarget:window action:@selector(lcts_openFromButton:) forControlEvents:UIControlEventTouchUpInside];
+
+    // 位置が邪魔なときのために動かせるようにする
+    UIPanGestureRecognizer *pan =
+        [[UIPanGestureRecognizer alloc] initWithTarget:window action:@selector(lcts_dragButton:)];
+    [button addGestureRecognizer:pan];
+
+    [window addSubview:button];
+    objc_setAssociatedObject(window, &kLCTSButtonKey, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+%hook UIWindow
+%new
+- (void)lcts_openFromButton:(UIButton *)sender {
+    [LCTweakStoreViewController presentFrom:(UIWindow *)self];
+}
+%new
+- (void)lcts_dragButton:(UIPanGestureRecognizer *)sender {
+    UIView *button = sender.view;
+    CGPoint delta = [sender translationInView:self];
+    button.center = CGPointMake(button.center.x + delta.x, button.center.y + delta.y);
+    [sender setTranslation:CGPointZero inView:self];
+}
+%end
+
 // hook が呼ばれなかった場合の保険。画面が出来上がるのを待って自分で探す。
 static void LCTSPoll(int remaining) {
     if (remaining <= 0) return;
@@ -116,6 +161,7 @@ static void LCTSPoll(int remaining) {
             if (![scene isKindOfClass:UIWindowScene.class]) continue;
             for (UIWindow *w in ((UIWindowScene *)scene).windows) {
                 LCTSAttach(w);
+                LCTSAddButton(w);
                 found = YES;
             }
         }
