@@ -179,6 +179,13 @@ struct ContentView: View {
                     get: { Runner.dockEnabled },
                     set: { Runner.dockEnabled = $0 }
                 )).font(.footnote).fixedSize()
+                Picker("論理幅", selection: Binding(
+                    get: { Runner.logicalWidth },
+                    set: { Runner.logicalWidth = $0 }
+                )) {
+                    Text("文字大きめ").tag(864)
+                    Text("広く使う").tag(1278)
+                }.pickerStyle(.segmented).fixedSize()
                 Spacer()
             }
             ScrollViewReader { proxy in
