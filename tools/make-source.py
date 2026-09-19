@@ -44,6 +44,14 @@ TWEAKS = {
         "bundleIdentifier": "com.google.ios.youtubemusic",
         "description": "YouTube Music の広告除去・音源とカバーの保存・日本語設定",
     },
+    "LCTweakStore.dylib": {
+        # LiveContainer 自身に読み込ませるので、フォルダではなくグローバル直下に置く
+        "folder": "",
+        "name": "LCTweakStore",
+        "app": "LiveContainer",
+        "bundleIdentifier": "com.kdt.livecontainer",
+        "description": "LiveContainer の中から tweak を取り込む。2 本指で 0.8 秒長押しで開く",
+    },
     "SCInsta.dylib": {
         "folder": "instagram",   # 端末側の調整フォルダ名。LCTweakStore がここへ置く
         "name": "SCInsta",

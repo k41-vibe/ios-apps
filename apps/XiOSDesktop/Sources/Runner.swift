@@ -152,7 +152,11 @@ final class Runner {
     // (xios-app.md "Render Scale")、同じ手で行く: 論理幅を 864 に固定し、高さは
     // 画面の縦横比から決め、ScreenView が aspect-fit で縮小する。タッチの逆変換は
     // ScreenView.fbPoint がビューポート基準なので、そのままで合う。
-    static let logicalWidth = 864
+    /// 論理画面の幅。864 は xiOS のシェルが描ける下限(ui = 幅/1440 の下限 0.6)で、文字が最も大きい。
+    /// 1278 にすると縦の作業領域が 286 から 526 に増え、保存の画面のような縦長の窓が収まる代わりに、
+    /// 文字はおよそ 3 分の 2 になる。セッションを始める前に決めること
+    static var logicalWidth = 864
+    static let logicalWidthChoices = [864, 1278]
     static var logicalPoints = CGSize(width: 864, height: 1668)   // 14 Pro の縦横比の既定
     static var topInsetPoints: CGFloat = 59
 
