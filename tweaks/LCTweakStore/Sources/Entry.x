@@ -10,8 +10,21 @@
 static char kLCTSGestureKey;
 static char kLCTSTabKey;
 
+// LiveContainer 自身かどうか。
+//
+// bundle id で判定していたが、それを入れた版では何も出なくなった(実機 2026-09-19)。
+// 帯を出していた版は判定を通していなかったので、値が com.kdt.livecontainer ではない。
+// ゲストアプリは LiveContainer の Documents/Applications 以下から読み込まれるので、
+// 自分の置き場所で見分ける。ここが確実に違う。
 static BOOL LCTSIsHost(void) {
-    return [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.kdt.livecontainer"];
+    static BOOL host = NO;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        host = ![NSBundle.mainBundle.bundlePath containsString:@"/Documents/Applications/"];
+        NSLog(@"[LCTweakStore] host=%d bundleId=%@ path=%@",
+              host, NSBundle.mainBundle.bundleIdentifier, NSBundle.mainBundle.bundlePath);
+    });
+    return host;
 }
 
 static void LCTSAddButton(UIWindow *window);
@@ -120,6 +133,7 @@ static void LCTSAddButton(UIWindow *window) {
 
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
     [button setTitle:@"T" forState:UIControlStateNormal];
+    button.accessibilityLabel = NSBundle.mainBundle.bundleIdentifier;
     button.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBold];
     [button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
     button.backgroundColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.85];
