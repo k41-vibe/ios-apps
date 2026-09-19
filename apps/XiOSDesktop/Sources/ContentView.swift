@@ -179,6 +179,16 @@ struct ContentView: View {
                     get: { Runner.dockEnabled },
                     set: { Runner.dockEnabled = $0 }
                 )).font(.footnote).fixedSize()
+                Toggle("上のバー", isOn: Binding(
+                    get: { Runner.barEnabled },
+                    set: { Runner.barEnabled = $0 }
+                )).font(.footnote).fixedSize()
+                Toggle("iPadOS 風(全画面+下から払う)", isOn: Binding(
+                    get: { Runner.ipadMode },
+                    set: { Runner.ipadMode = $0
+                           setenv("IOSC_FULLSCREEN_TOPLEVELS", $0 ? "1" : "0", 1)
+                           ScreenClient.homeGestureEnabled = $0 }
+                )).font(.footnote).fixedSize()
                 Picker("論理幅", selection: Binding(
                     get: { Runner.logicalWidth },
                     set: { Runner.logicalWidth = $0 }
@@ -293,6 +303,7 @@ struct ContentView: View {
             guard client.connect(path: r.ddxPath()) else { return }
             // 入力は画面と別のソケット。繋がらなくても画面は出るので、失敗しても進む
             client.xin = XInputAPI(handle: handle, log: l)
+            client.runner = r          // 下から払ったときに一覧を起こす
             client.connectInput(path: r.inputPath())
             DispatchQueue.main.async {
                 screen = client
