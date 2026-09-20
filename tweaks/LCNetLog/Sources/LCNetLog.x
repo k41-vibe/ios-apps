@@ -182,14 +182,18 @@ static void LCNLRecord(NSURLRequest *request, NSURLResponse *response, NSData *d
 
 %hook NSURLSession
 
+// Logos は %orig(...) の中に波括弧つきのブロックを直接書くと括弧を数え間違える。
+// ブロックは変数に入れてから渡す。
 - (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request
                             completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))handler {
     if (!handler || !LCNetLog.shared.recording) return %orig;
     NSTimeInterval started = NSDate.timeIntervalSinceReferenceDate;
-    return %orig(request, ^(NSData *data, NSURLResponse *response, NSError *error) {
-        LCNLRecord(request, response, data, started);
-        handler(data, response, error);
-    });
+    void (^wrapped)(NSData *, NSURLResponse *, NSError *) =
+        ^(NSData *data, NSURLResponse *response, NSError *error) {
+            LCNLRecord(request, response, data, started);
+            handler(data, response, error);
+        };
+    return %orig(request, wrapped);
 }
 
 - (NSURLSessionDataTask *)dataTaskWithURL:(NSURL *)url
@@ -197,10 +201,12 @@ static void LCNLRecord(NSURLRequest *request, NSURLResponse *response, NSData *d
     if (!handler || !LCNetLog.shared.recording) return %orig;
     NSURLRequest *request = [NSURLRequest requestWithURL:url];
     NSTimeInterval started = NSDate.timeIntervalSinceReferenceDate;
-    return %orig(url, ^(NSData *data, NSURLResponse *response, NSError *error) {
-        LCNLRecord(request, response, data, started);
-        handler(data, response, error);
-    });
+    void (^wrapped)(NSData *, NSURLResponse *, NSError *) =
+        ^(NSData *data, NSURLResponse *response, NSError *error) {
+            LCNLRecord(request, response, data, started);
+            handler(data, response, error);
+        };
+    return %orig(url, wrapped);
 }
 
 - (NSURLSessionUploadTask *)uploadTaskWithRequest:(NSURLRequest *)request
@@ -210,15 +216,18 @@ static void LCNLRecord(NSURLRequest *request, NSURLResponse *response, NSData *d
     NSTimeInterval started = NSDate.timeIntervalSinceReferenceDate;
     NSMutableURLRequest *withBody = [request mutableCopy];
     if (!withBody.HTTPBody.length) withBody.HTTPBody = bodyData;
-    return %orig(request, bodyData, ^(NSData *data, NSURLResponse *response, NSError *error) {
-        LCNLRecord(withBody, response, data, started);
-        handler(data, response, error);
-    });
+    void (^wrapped)(NSData *, NSURLResponse *, NSError *) =
+        ^(NSData *data, NSURLResponse *response, NSError *error) {
+            LCNLRecord(withBody, response, data, started);
+            handler(data, response, error);
+        };
+    return %orig(request, bodyData, wrapped);
 }
 
 %end
 
 // 完了処理を渡さず、デリゲートで受け取る形。要求だけでも残しておくと、どこへ何を送ったかは分かる。
+
 %hook NSURLSessionTask
 
 - (void)resume {
