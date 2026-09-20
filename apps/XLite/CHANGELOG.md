@@ -13,3 +13,6 @@
 - cookie の取り込み(auth_token / ct0)。web のログイン画面が弾かれたときの逃げ道
 - User-Agent の差し替え。既定は実機と同じ iOS 26 の Safari
 - アプリ内アップデートとログ送信(XiOSDesktop と同じ仕組み)
+- 中継(`Sources/Relay.swift`)。127.0.0.1 に HTTP の受け口を立て、中身を URLSession で
+  x.com から取って WKWebView へ返す。スクリーンタイムの Web 判定は WebKit が読み込む URL を
+  見るので、開く URL が 127.0.0.1 なら判定に x.com が渡らない。設定で入切できる

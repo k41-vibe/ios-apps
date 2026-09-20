@@ -12,15 +12,18 @@ struct WebContainer: UIViewRepresentable {
 struct ContentView: View {
     @StateObject private var log = ConsoleLog()
     @StateObject private var updater: Updater
+    @StateObject private var relay: Relay
     @StateObject private var model: WebModel
     @State private var showSettings = false
     @State private var started = false
 
     init() {
         let l = ConsoleLog()
+        let r = Relay(log: l)
         _log = StateObject(wrappedValue: l)
         _updater = StateObject(wrappedValue: Updater(log: l))
-        _model = StateObject(wrappedValue: WebModel(log: l))
+        _relay = StateObject(wrappedValue: r)
+        _model = StateObject(wrappedValue: WebModel(log: l, relay: r))
     }
 
     var body: some View {
@@ -44,14 +47,16 @@ struct ContentView: View {
             bar
         }
         .sheet(isPresented: $showSettings) {
-            SettingsView(model: model, updater: updater, log: log)
+            SettingsView(model: model, relay: relay, updater: updater, log: log)
         }
         .task {
             guard !started else { return }
             started = true
             Updater.cleanup()          // 前回の更新で残った旧版を片づける
             log.log("起動 \(AppVersion.string)")
-            model.loadHome()
+            // 中継を先に立ててから開く。失敗したら x.com へ直接つなぐ(model.home が切り替わる)
+            if relay.enabled { await relay.start() }
+            model.relayChanged()
         }
     }
 
