@@ -9,6 +9,7 @@
 
 #import "LCNetLog.h"
 #import <objc/runtime.h>
+#import <zlib.h>
 
 static const NSUInteger kBodyLimit = 256 * 1024;   // 1 件あたりの本文の上限
 static const NSUInteger kEntryLimit = 2000;        // 保持する件数
@@ -17,10 +18,48 @@ static const NSUInteger kEntryLimit = 2000;        // 保持する件数
 
 @implementation LCNLEntry
 
-/// 本文を読める形にする。JSON なら整形し、そうでなければ文字として出し、
+/// gzip なら戻す。
+///
+/// Instagram も Meta の SDK も要求本文を gzip で送るので、そのままでは 16 進の羅列に
+/// なって中身が読めない(実機 2026-09-20)。応答も Content-Encoding で圧縮されうる。
+static NSData *LCNLGunzip(NSData *data) {
+    if (data.length < 18) return nil;
+    const unsigned char *bytes = data.bytes;
+    if (bytes[0] != 0x1f || bytes[1] != 0x8b) return nil;   // gzip の目印
+
+    // zlib を直接使う。Compression は生の deflate しか受け取らず、gzip の頭と尾を扱えない
+    z_stream stream = {0};
+    if (inflateInit2(&stream, 16 + MAX_WBITS) != Z_OK) return nil;
+    stream.next_in = (Bytef *)data.bytes;
+    stream.avail_in = (uInt)data.length;
+
+    NSMutableData *out = [NSMutableData dataWithLength:data.length * 4 + 1024];
+    NSUInteger total = 0;
+    int status;
+    do {
+        if (total == out.length) [out increaseLengthBy:out.length];
+        stream.next_out = (Bytef *)out.mutableBytes + total;
+        stream.avail_out = (uInt)(out.length - total);
+        status = inflate(&stream, Z_NO_FLUSH);
+        total = out.length - stream.avail_out;
+        if (status != Z_OK && status != Z_STREAM_END) { inflateEnd(&stream); return nil; }
+    } while (status != Z_STREAM_END);
+    inflateEnd(&stream);
+    out.length = total;
+    return out;
+}
+
+/// 本文を読める形にする。gzip なら戻し、JSON なら整形し、そうでなければ文字として出し、
 /// それも無理なら 16 進で先頭だけ見せる。
 static NSString *LCNLBody(NSData *data) {
     if (!data.length) return @"(なし)";
+    NSData *plain = LCNLGunzip(data);
+    if (plain) {
+        NSString *inner = LCNLBody(plain);
+        return [NSString stringWithFormat:@"(gzip %lu -> %lu B)
+%@",
+                (unsigned long)data.length, (unsigned long)plain.length, inner];
+    }
     id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     if (json) {
         NSData *pretty = [NSJSONSerialization dataWithJSONObject:json
