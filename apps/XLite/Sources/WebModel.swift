@@ -8,7 +8,7 @@ import WebKit
 /// だからここでは API を叩かず、本物の x.com をそのまま表示して、邪魔なものだけ CSS/JS で消す。
 @MainActor
 final class WebModel: NSObject, ObservableObject {
-    static let home = URL(string: "https://x.com/home")!
+    static let directHome = URL(string: "https://x.com/home")!
     /// x.com は「Safari かどうか」を UA で見る。WKWebView の既定 UA は Version/… Safari/… を
     /// 含まないので、実機と同じ iOS 26 の Safari を名乗る
     static let defaultUserAgent =
@@ -34,10 +34,16 @@ final class WebModel: NSObject, ObservableObject {
 
     let webView: WKWebView
     let log: ConsoleLog
+    let relay: Relay
     private var tokens: [NSKeyValueObservation] = []
 
-    init(log: ConsoleLog) {
+    /// 中継が動いていれば 127.0.0.1、そうでなければ x.com を直接開く
+    var origin: URL { relay.baseURL ?? URL(string: "https://x.com")! }
+    var home: URL { relay.baseURL?.appendingPathComponent("home") ?? Self.directHome }
+
+    init(log: ConsoleLog, relay: Relay) {
         self.log = log
+        self.relay = relay
         self.config = CleanerConfig.load()
 
         let cfg = WKWebViewConfiguration()
@@ -65,6 +71,12 @@ final class WebModel: NSObject, ObservableObject {
     private func installScript() {
         let ucc = webView.configuration.userContentController
         ucc.removeAllUserScripts()
+        // 中継のとき、JS が組み立てる https://x.com/… を 127.0.0.1 に向け直す(Relay.patchScript)
+        if let base = relay.baseURL?.absoluteString {
+            ucc.addUserScript(WKUserScript(source: Relay.patchScript(base: base),
+                                           injectionTime: .atDocumentStart,
+                                           forMainFrameOnly: false))
+        }
         ucc.addUserScript(Cleaner.userScript(config))
     }
 
@@ -104,14 +116,21 @@ final class WebModel: NSObject, ObservableObject {
 
     // ------------------------------------------------------------ 操作
 
-    func loadHome() { webView.load(URLRequest(url: Self.home)) }
+    func loadHome() { webView.load(URLRequest(url: home)) }
     func goBack() { webView.goBack() }
     func goForward() { webView.goForward() }
     func reload() { webView.reloadFromOrigin() }
 
     func open(_ path: String) {
-        guard let u = URL(string: path.hasPrefix("http") ? path : "https://x.com" + path) else { return }
+        let s = path.hasPrefix("http") ? relay.toLocal(path) : origin.absoluteString + path
+        guard let u = URL(string: s) else { return }
         webView.load(URLRequest(url: u))
+    }
+
+    /// 中継の入切を変えたあと。注入する JS と開く URL の両方が変わるので、両方作り直す
+    func relayChanged() {
+        installScript()
+        loadHome()
     }
 
     // ------------------------------------------------------------ cookie
@@ -126,11 +145,14 @@ final class WebModel: NSObject, ObservableObject {
         let store = webView.configuration.websiteDataStore.httpCookieStore
         let expires = Date().addingTimeInterval(60 * 60 * 24 * 365)
         var made = 0
-        for domain in [".x.com", ".twitter.com"] {
+        // 中継のときは画面の出どころが 127.0.0.1 なので、そちらにも同じ cookie を置く。
+        // 中継先は http なので secure は付けない(付けると保存されない)
+        for domain in [".x.com", ".twitter.com", "127.0.0.1"] {
+            let secure = domain == "127.0.0.1" ? "FALSE" : "TRUE"
             for (name, value) in [("auth_token", token), ("ct0", csrf)] {
                 let props: [HTTPCookiePropertyKey: Any] = [
                     .domain: domain, .path: "/", .name: name, .value: value,
-                    .secure: "TRUE", .expires: expires,
+                    .secure: secure, .expires: expires,
                 ]
                 guard let c = HTTPCookie(properties: props) else { continue }
                 await store.setCookie(c)
@@ -146,7 +168,10 @@ final class WebModel: NSObject, ObservableObject {
         let store = webView.configuration.websiteDataStore
         let types = WKWebsiteDataStore.allWebsiteDataTypes()
         let records = await store.dataRecords(ofTypes: types)
-        let targets = records.filter { $0.displayName.contains("x.com") || $0.displayName.contains("twitter") }
+        let targets = records.filter {
+            $0.displayName.contains("x.com") || $0.displayName.contains("twitter")
+                || $0.displayName.contains("127.0.0.1")
+        }
         await store.removeData(ofTypes: types, for: targets)
         log.log("cookie とデータを消した(\(targets.count) 件)")
         loadHome()
@@ -170,12 +195,23 @@ final class WebModel: NSObject, ObservableObject {
 extension WebModel: WKNavigationDelegate {
     private static let inApp: Set<String> = ["x.com", "www.x.com", "mobile.x.com",
                                              "twitter.com", "www.twitter.com", "mobile.twitter.com",
-                                             "api.x.com", "abs.twimg.com", "pbs.twimg.com", "video.twimg.com"]
+                                             "api.x.com", "abs.twimg.com", "pbs.twimg.com", "video.twimg.com",
+                                             "127.0.0.1"]
 
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = action.request.url, let host = url.host else {
             decisionHandler(.allow); return
+        }
+        // 中継のとき、ページ内の絶対リンクで x.com へ移動すると WebKit の判定に当たる。
+        // 手前で止めて 127.0.0.1 の同じ場所へ入れ替える(JS の差し替えが届かない経路の受け皿)
+        if relay.isRunning, Relay.mappedHosts.contains(host), action.targetFrame?.isMainFrame != false {
+            let local = relay.toLocal(url.absoluteString)
+            if local != url.absoluteString, let u = URL(string: local) {
+                decisionHandler(.cancel)
+                webView.load(URLRequest(url: u))
+                return
+            }
         }
         // 画面の中身(iframe など)はそのまま。人が押した外部リンクだけ Safari へ出す
         if action.navigationType == .linkActivated, !Self.inApp.contains(host), url.scheme?.hasPrefix("http") == true {

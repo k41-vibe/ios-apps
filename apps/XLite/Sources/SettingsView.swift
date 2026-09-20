@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var model: WebModel
+    @ObservedObject var relay: Relay
     @ObservedObject var updater: Updater
     @ObservedObject var log: ConsoleLog
     @Environment(\.dismiss) private var dismiss
@@ -15,6 +16,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                relaySection
                 cleaner
                 login
                 display
@@ -27,6 +29,38 @@ struct SettingsView: View {
                 ToolbarItem(placement: .confirmationAction) { Button("閉じる") { dismiss() } }
             }
             .onAppear { userAgent = model.userAgent }
+        }
+    }
+
+    // ------------------------------------------------------------ 中継
+
+    private var relaySection: some View {
+        Section {
+            Toggle("中継を使う", isOn: $relay.enabled)
+                .onChange(of: relay.enabled) { on in
+                    Task {
+                        if on { await relay.start() } else { relay.stop() }
+                        model.relayChanged()
+                    }
+                }
+            HStack {
+                Text("状態")
+                Spacer()
+                Text(relay.isRunning ? "127.0.0.1:\(relay.port)" : "止まっています")
+                    .foregroundStyle(.secondary)
+                    .font(.system(.footnote, design: .monospaced))
+            }
+            if !relay.lastError.isEmpty {
+                Text(relay.lastError).font(.footnote).foregroundStyle(.red)
+            }
+            Text(model.currentURL.isEmpty ? "(まだ開いていません)" : model.currentURL)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+        } header: {
+            Text("中継")
+        } footer: {
+            Text("入にすると、画面は 127.0.0.1 を開き、中身だけを x.com から取ってきます。切ると x.com へ直接つなぎます。遮断されるかどうかを比べるときに切り替えてください。")
         }
     }
 
