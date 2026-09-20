@@ -56,8 +56,7 @@ static NSString *LCNLBody(NSData *data) {
     NSData *plain = LCNLGunzip(data);
     if (plain) {
         NSString *inner = LCNLBody(plain);
-        return [NSString stringWithFormat:@"(gzip %lu -> %lu B)
-%@",
+        return [NSString stringWithFormat:@"(gzip %lu -> %lu B)\n%@",
                 (unsigned long)data.length, (unsigned long)plain.length, inner];
     }
     id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
