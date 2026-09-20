@@ -52,6 +52,14 @@ TWEAKS = {
         "bundleIdentifier": "com.kdt.livecontainer",
         "description": "LiveContainer の中から tweak を取り込む。2 本指で 0.8 秒長押しで開く",
     },
+    "LCNetLog.dylib": {
+        # 全ゲストに読み込ませるのでグローバル直下
+        "folder": "",
+        "name": "LCNetLog",
+        "app": "すべてのアプリ",
+        "bundleIdentifier": "",
+        "description": "通信を記録して見る。画面右下の N を押す",
+    },
     "SCInsta.dylib": {
         "folder": "instagram",   # 端末側の調整フォルダ名。LCTweakStore がここへ置く
         "name": "SCInsta",
