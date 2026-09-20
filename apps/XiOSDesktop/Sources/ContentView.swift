@@ -147,6 +147,7 @@ struct ContentView: View {
                 Button("バー") { run { $0.startBar() } }.buttonStyle(.bordered).disabled(busy)
                 Button("端末") { run { $0.startFoot() } }.buttonStyle(.bordered).disabled(busy)
             }
+            ScrollView(.horizontal, showsIndicators: false) {
             HStack {
                 Button("窓") { run { $0.startTestClient() } }.buttonStyle(.bordered).disabled(busy)
                 Button("ドック") { run { $0.startDock() } }.buttonStyle(.bordered).disabled(busy)
@@ -154,6 +155,7 @@ struct ContentView: View {
                 Button("GIO 試験") { run { $0.runGioTests() } }.buttonStyle(.bordered).disabled(busy)
                 Button("記録消去") { run { $0.clearEditorState() } }.buttonStyle(.bordered).disabled(busy)
                 Button("全部") { startEverything() }.buttonStyle(.borderedProminent).disabled(busy || opening)
+            }.padding(.horizontal, 1)
             }
             HStack {
                 Button("歯車") { run { $0.startGears() } }.buttonStyle(.bordered).disabled(busy)
@@ -163,6 +165,7 @@ struct ContentView: View {
               }
             }
             .font(.footnote)
+            ScrollView(.horizontal, showsIndicators: false) {
             HStack {
                 Toggle("詳細ログ", isOn: Binding(
                     get: { Runner.traceEnabled },
@@ -191,6 +194,11 @@ struct ContentView: View {
                            setenv("IOSC_FULLSCREEN_TOPLEVELS", $0 ? "1" : "0", 1)
                            ScreenClient.homeGestureEnabled = $0 }
                 )).font(.footnote).fixedSize()
+            }.padding(.horizontal, 1)
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+            HStack {
+                Text("描画").font(.caption2)
                 Picker("描画", selection: Binding(
                     get: { Runner.gskRenderer },
                     set: { Runner.gskRenderer = $0; setenv("GSK_RENDERER", $0, 1) }
@@ -198,6 +206,7 @@ struct ContentView: View {
                     Text("cairo").tag("cairo")
                     Text("gl").tag("gl")
                 }.pickerStyle(.segmented).fixedSize()
+                Text("倍率").font(.caption2)
                 Picker("倍率", selection: Binding(
                     get: { Runner.outputScale },
                     set: { Runner.outputScale = $0 }
@@ -205,6 +214,7 @@ struct ContentView: View {
                     Text("くっきり").tag(2)
                     Text("速い").tag(1)
                 }.pickerStyle(.segmented).fixedSize()
+                Text("論理幅").font(.caption2)
                 Picker("論理幅", selection: Binding(
                     get: { Runner.logicalWidth },
                     set: { Runner.logicalWidth = $0 }
@@ -212,7 +222,7 @@ struct ContentView: View {
                     Text("文字大きめ").tag(864)
                     Text("広く使う").tag(1278)
                 }.pickerStyle(.segmented).fixedSize()
-                Spacer()
+            }.padding(.horizontal, 1)
             }
             ScrollViewReader { proxy in
                 ScrollView {
