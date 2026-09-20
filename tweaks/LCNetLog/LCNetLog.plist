@@ -1,0 +1,6 @@
+{
+    /* UIKit を使うプロセス全部。どのアプリを対象にするかは LCNetLogApps で決める */
+    Filter = {
+        Bundles = ( "com.apple.UIKit" );
+    };
+}

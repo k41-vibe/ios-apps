@@ -1,0 +1,8 @@
+Package: dev.rutoi.lcnetlog
+Name: LCNetLog
+Version: 1.0.0
+Description: どのアプリの通信も記録して見る
+Maintainer: rutoi
+Author: rutoi
+Section: Tweaks
+Depends: firmware (>= 15.0)
