@@ -227,6 +227,13 @@ enum Probes {
             L.log("mprotect RW->RX failed errno \(errno) (no JIT: expected in JIT-less mode)")
             munmap(p, size); return
         }
+        // iOS 26 では CS_DEBUGGED が立っていても、mprotect しただけのページは実行できない
+        // (実機 2026-09-21: KERN_PROTECTION_FAILURE でプロセスごと終了)。領域は
+        // StikDebug に要求してもらう方式(JITBrkAllocate)でしか実行できないので、
+        // ここでは実行せず、実行の確認は jitBenchmark に任せる
+        L.log("mprotect RX ok。実行の確認は「JIT速度」(領域を要求する方式)で行う")
+        munmap(p, size); return
+        #if false
         if processIsDebugged() == false {
             L.log("mprotect RX ok だが CS_DEBUGGED が立っていないので実行しない(呼ぶと落ちる)")
             munmap(p, size); return
@@ -239,6 +246,7 @@ enum Probes {
         let fn = unsafeBitCast(p, to: Fn.self)
         L.log("mprotect RX ok; executing written code -> \(fn()) (expect 42)")
         munmap(p, size)
+        #endif
     }
 
     // JIT が使えるときと使えないときで、同じ計算にどれだけ時間差が出るか。
