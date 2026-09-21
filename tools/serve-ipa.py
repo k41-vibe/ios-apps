@@ -4,7 +4,9 @@
 LiveContainer は URL からの取り込みができるので、Syncthing もファイルAppも
 経由せずに済む。URL は毎回同じなので、iPhone 側はブックマークしておけばよい。
 
-    python tools/serve-ipa.py [ポート]
+    python tools/serve-ipa.py [ポート] [--dir <ipa の置き場>]
+
+--dir を省くと ios-apps/dist を配る。別のリポジトリで作った ipa もこれで配れる。
 
 止めるときは Ctrl+C。
 """
@@ -17,7 +19,7 @@ import socket
 import subprocess
 import sys
 
-ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "dist")
+DEFAULT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "dist")
 TAILSCALE = r"C:\Program Files\Tailscale\tailscale.exe"
 
 
@@ -69,8 +71,10 @@ def manifest_for(ipa_path):
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    root = os.path.abspath(DEFAULT_ROOT)   # main() が --dir で差し替える
+
     def __init__(self, *a, **kw):
-        super().__init__(*a, directory=os.path.abspath(ROOT), **kw)
+        super().__init__(*a, directory=self.root, **kw)
 
     def do_POST(self):
         """/upload/<名前>: アプリからのログ受け取り。dist/reports/<時刻>-<名前> に保存する。
@@ -85,7 +89,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_error(400, "bad length")
             return
         data = self.rfile.read(length)
-        outdir = os.path.join(os.path.abspath(ROOT), "reports")
+        outdir = os.path.join(self.root, "reports")
         os.makedirs(outdir, exist_ok=True)
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         path = os.path.join(outdir, f"{stamp}-{name}")
@@ -108,7 +112,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
 
         if self.path.endswith(".json"):
-            ipa = os.path.join(os.path.abspath(ROOT), os.path.basename(self.path)[:-5] + ".ipa")
+            ipa = os.path.join(self.root, os.path.basename(self.path)[:-5] + ".ipa")
             if not os.path.isfile(ipa):
                 self.send_error(404, "no ipa for manifest")
                 return
@@ -136,19 +140,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 
 def main():
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8788
-    root = os.path.abspath(ROOT)
+    import argparse
+    ap = argparse.ArgumentParser(description="ipa を LAN と Tailscale に配る")
+    ap.add_argument("port", nargs="?", type=int, default=8788)
+    ap.add_argument("--dir", default=DEFAULT_ROOT, help="ipa の置き場(既定: ios-apps/dist)")
+    args = ap.parse_args()
+    port, root = args.port, os.path.abspath(args.dir)
     if not os.path.isdir(root):
-        print(f"dist/ が無い: {root}")
+        print(f"配布元のフォルダが無い: {root}")
         return 1
+    Handler.root = root
     names = sorted(n for n in os.listdir(root) if n.endswith(".ipa"))
     print(f"配るもの ({root}):")
     for n in names:
         mb = os.path.getsize(os.path.join(root, n)) / 1e6
         print(f"  {n}  {mb:.0f} MB")
     print()
+    if not names:
+        print(f"ipa が1つも無い: {root}")
+        return 1
     for label, ip in addresses():
-        print(f"{label}: http://{ip}:{port}/XiOSDesktop.ipa")
+        for n in names:
+            print(f"{label}: http://{ip}:{port}/{n}")
     print()
     print("初回は LiveContainer の + から URL を貼る。2 回目からはアプリ内の「更新」で取り込める。止めるときは Ctrl+C")
     # Tailscale の正規証明書があれば https も開く(iOS の ATS は 100.x への平文 http を拒む)。

@@ -167,6 +167,46 @@ enum Probes {
         return (flags & 0x1000_0000) != 0 // CS_DEBUGGED
     }
 
+    // UTM を速くする 3 つの手のうち、1 と 3 の前提を実機で確かめる。
+    //
+    //   手1 CPU の仮想化機能   カーネル側に在るか / 権限が在るか の 2 段。ここでは両方見る
+    //   手3 メモリの確保の仕方 UTM は dynamic-codesigning の有無だけで split-wx を決める。
+    //                          StikDebug は CS_DEBUGGED を立てる別の経路なので、
+    //                          権限が無いまま実行できているなら判定が実態と合っていない
+    static func utmPrereq(_ L: ProbeLog) {
+        L.log("=== UTM の前提 ===")
+
+        let hv = hv_probe()
+        L.log("仮想化トラップ: 返り値 0x\(String(UInt64(bitPattern: hv), radix: 16))"
+              + (hv_is_unsupported(hv) != 0 ? " (HV_UNSUPPORTED。カーネル側にも無い)"
+                                            : " (HV_UNSUPPORTED ではない。壁は権限だけ)"))
+
+        var buf = [CChar](repeating: 0, count: 16384)
+        let n = buf.withUnsafeMutableBufferPointer { ent_dump($0.baseAddress, $0.count) }
+        guard n > 0, let xml = String(validatingUTF8: buf) else {
+            L.log("権限の一覧: 署名から取り出せなかった")
+            return
+        }
+        // 見たいのは 4 つ。全文は長いので該当行だけ出す
+        let keys = ["com.apple.private.hypervisor",
+                    "dynamic-codesigning",
+                    "com.apple.developer.kernel.increased-memory-limit",
+                    "com.apple.developer.kernel.extended-virtual-addressing"]
+        for k in keys {
+            L.log("権限 \(k): \(xml.contains(k) ? "あり" : "無し")")
+        }
+        L.log("権限の一覧: \(n) バイト。全文は下に出す")
+        L.log(xml)
+
+        if let dbg = processIsDebugged() {
+            L.log("CS_DEBUGGED: \(dbg ? "立っている" : "立っていない")")
+            if dbg && !xml.contains("dynamic-codesigning") {
+                L.log("=> UTM の判定(dynamic-codesigning だけを見る)は実態と合っていない。"
+                      + "split-wx=on が要らない場面で選ばれる")
+            }
+        }
+    }
+
     // 書いたメモリを実行できるか。mprotect が拒否されるだけで落ちない設計。
     static func jitProbe(_ L: ProbeLog) {
         L.log("=== jit / W^X ===")
