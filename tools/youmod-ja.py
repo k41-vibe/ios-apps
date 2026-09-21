@@ -10,13 +10,13 @@ en.lproj の全キーを走査し、下の対訳表 JA にあるものは日本�
     python tools/youmod-ja.py [--bundle <YouMod.bundle のパス>]
 """
 import argparse
+import os
 import plistlib
 import sys
 from pathlib import Path
 
-DEFAULT_BUNDLE = Path(
-    r"C:\Users\rutoi\AppData\Local\Temp\youmod\var\jb\Library"
-    r"\Application Support\YouMod.bundle"
+DEFAULT_BUNDLE = Path(os.environ.get("TEMP", "/tmp")) / (
+    "youmod/var/jb/Library/Application Support/YouMod.bundle"
 )
 
 # 対訳表。値の \n は原文と同じくリテラルの 2 文字(バックスラッシュ + n)。

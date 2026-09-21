@@ -8,7 +8,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Name,
     [string]$Release = "",
     [switch]$NoPush,
-    [string]$Dest = "C:\Users\rutoi\SharedFolder\ios-apps"
+    [string]$Dest = "$env:USERPROFILE\SharedFolder\ios-apps"
 )
 $ErrorActionPreference = "Stop"
 
