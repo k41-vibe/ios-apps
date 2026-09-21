@@ -10,7 +10,7 @@
 2. `apps/<Name>/Sources/` に SwiftUI で実装する。`project.yml` は必要なときだけ触る
    (権限が要るなら `info.properties` に `NSCameraUsageDescription` 等を足す)
 3. `.\tools\build.ps1 <Name>` — commit/push → workflow_dispatch → 完了待ち →
-   `dist/<Name>.ipa` と `C:\Users\rutoi\SharedFolder\ios-apps\<Name>.ipa` に配置(開発ビルド、版 0.0.YYYYMMDD)
+   `dist/<Name>.ipa` と `%USERPROFILE%\SharedFolder\ios-apps\<Name>.ipa` に配置(開発ビルド、版 0.0.YYYYMMDD)
 4. 瑠人さんに取り込み方を伝える。初回は `build.ps1` が出す URL(`tools/serve-ipa.py`、LAN / Tailscale)を
    LiveContainer の + に貼る。**2 回目からはアプリ内の「更新」ボタン**で取り込める(XiOSDesktop は
    `Sources/Updater.swift` で実装済み。他のアプリにも同じ仕組みを載せられる)。SharedFolder 経由は
