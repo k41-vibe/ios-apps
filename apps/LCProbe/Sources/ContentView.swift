@@ -24,6 +24,7 @@ struct ContentView: View {
                 Button("Metal/IOSurface") { startSurface() }.buttonStyle(.bordered).disabled(surfaceProbe != nil)
             }
             HStack {
+                Button("UTM の前提") { run { Probes.utmPrereq(log) } }.buttonStyle(.bordered).disabled(busy)
                 Button("JIT/W^X") { run { Probes.jitProbe(log) } }.buttonStyle(.bordered).disabled(busy)
                 Button("JIT速度") { run { Probes.jitBenchmark(log) } }.buttonStyle(.bordered).disabled(busy)
                 Button("スレッド上限") { run { Probes.threads(log) } }.buttonStyle(.bordered).disabled(busy)
