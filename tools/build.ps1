@@ -55,7 +55,7 @@ if ($Release) {
     [IO.File]::WriteAllText($changelog, $text, (New-Object Text.UTF8Encoding $false))
 
     # リリースも作りかけを巻き込まないよう、このアプリと共有ツールだけを積む
-    Invoke-Git add --ignore-removal "apps/$Name" tools docs .github
+    Invoke-Git add --ignore-removal "apps/$Name" shared tools docs .github
     Invoke-Git commit -q -m "release: $Name v$Release"
     Invoke-Git push -q origin main
     Invoke-Git tag -a $tag -m "$Name v$Release"
@@ -67,7 +67,7 @@ if ($Release) {
         # 作りかけを巻き込まないよう、このアプリと共有ツールだけを commit する
         # (以前 git add -A で、別作業中のエージェントが書いた途中のファイルを
         #  ビルドに載せかけた。何を積んだかは下に出す)
-        Invoke-Git add --ignore-removal "apps/$Name" tools docs .github
+        Invoke-Git add --ignore-removal "apps/$Name" shared tools docs .github
         # `git diff --cached --quiet` は出力を持たないので、if に直接書くと常に偽になる
         # (2026-09-13: 何も無いのに commit しようとして落ちた)。終了コードで見る
         & git.exe diff --cached --quiet
