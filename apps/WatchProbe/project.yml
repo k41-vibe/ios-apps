@@ -1,0 +1,57 @@
+name: WatchProbe
+options:
+  bundleIdPrefix: com.rutoi
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "16.0"
+targets:
+  WatchProbe:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: WatchProbe
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.rutoi.watchprobe
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_REQUIRED: "NO"
+        ENABLE_BITCODE: "NO"
+  # 時計アプリ。build.yml は -sdk iphoneos で iOS 側だけ建てるので、こちらは postbuild.sh が
+  # watchos SDK で別に建てて <App>.app/Watch/ に入れる(Xcode の Embed Watch Content と同じ配置)
+  WatchProbeWatch:
+    type: application
+    platform: watchOS
+    deploymentTarget: "10.0"
+    sources:
+      - WatchSources
+    info:
+      path: WatchInfo.plist
+      properties:
+        CFBundleDisplayName: WatchProbe
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        WKApplication: true
+        # 親アプリの ID。Impactor は署名時にこのキーも書き換える(bundle.rs set_matching_identifier)
+        WKCompanionAppBundleIdentifier: com.rutoi.watchprobe
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.rutoi.watchprobe.watchkitapp
+        MARKETING_VERSION: "0.0.0"
+        CURRENT_PROJECT_VERSION: "0"
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_REQUIRED: "NO"
