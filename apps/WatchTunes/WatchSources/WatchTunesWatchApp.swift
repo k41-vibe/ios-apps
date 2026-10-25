@@ -153,7 +153,18 @@ final class Store: ObservableObject {
         do { try data.write(to: localURL(t.id)); return true } catch { return false }
     }
 
-    func saveAlbum(_ tracks: [Track]) async { for t in tracks { _ = await ensureSaved(t) } }
+    func saveAlbum(_ tracks: [Track], force: Bool = false) async {
+        for t in tracks {
+            if force { try? FileManager.default.removeItem(at: localURL(t.id)) }
+            _ = await ensureSaved(t)
+        }
+    }
+    func clearCache() {
+        if let fs = try? FileManager.default.contentsOfDirectory(at: saveDir, includingPropertiesForKeys: nil) {
+            for f in fs where f.pathExtension == "m4a" { try? FileManager.default.removeItem(at: f) }
+        }
+        objectWillChange.send()
+    }
 
     func toggle() {
         guard let p = player else { return }
@@ -240,6 +251,9 @@ struct AlbumsView: View {
                     }
                     .listRowBackground(Color.surface)
                 }
+                Button("保存した曲を全消去") { store.clearCache() }
+                    .foregroundStyle(Color.amberDeep)
+                    .listRowBackground(Color.surface)
                 if !store.status.isEmpty {
                     Text(store.status).font(.caption2).foregroundStyle(Color.sub)
                     Button("再読み込み") { Task { await store.loadLibrary() } }
@@ -286,6 +300,7 @@ struct TracksView: View {
                 }
                 if !a.tracks.isEmpty {
                     Button("アルバムを保存") { Task { await store.saveAlbum(a.tracks) } }
+                        .onLongPressGesture { Task { await store.saveAlbum(a.tracks, force: true) } }
                         .listRowBackground(Color.surface)
                 }
             }
@@ -328,12 +343,13 @@ struct NewAlbumView: View {
     @State private var name = ""
     var body: some View {
         List {
-            TextField("アルバム名", text: $name).foregroundStyle(Color.ink)
+            TextField("アルバム名", text: $name).foregroundStyle(.black).listRowBackground(Color.white)
             Button("作成") { store.createCustom(name); dismiss() }
                 .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .navigationTitle("新規アルバム")
         .containerBackground(Color.bg, for: .navigation)
+        .preferredColorScheme(.light)
     }
 }
 
@@ -351,7 +367,7 @@ struct AddToAlbumSheet: View {
                 if store.customs.isEmpty { Text("まだアルバムがありません").font(.caption2).foregroundStyle(Color.sub) }
             }
             Section("新規に作って追加") {
-                TextField("アルバム名", text: $newName).foregroundStyle(Color.ink)
+                TextField("アルバム名", text: $newName).foregroundStyle(.black).listRowBackground(Color.white)
                 Button("作成して追加") {
                     store.createCustom(newName)
                     if let c = store.customs.last { store.addTrack(to: c.id, track) }
@@ -360,6 +376,7 @@ struct AddToAlbumSheet: View {
             }
         }
         .navigationTitle("アルバムに追加")
+        .preferredColorScheme(.light)
     }
 }
 
