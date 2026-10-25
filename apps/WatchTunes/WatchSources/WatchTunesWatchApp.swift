@@ -104,6 +104,7 @@ final class Store: ObservableObject {
 
     private func playCurrent() async {
         guard queue.indices.contains(index) else { return }
+        player?.pause()  // stop previous before starting next
         let t = queue[index]; current = t; progress = 0
         if !isSaved(t.id), !(await ensureSaved(t)) { status = "取得に失敗しました"; return }
         let sess = AVAudioSession.sharedInstance()
