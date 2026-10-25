@@ -44,7 +44,7 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         WKApplication: true
         WKCompanionAppBundleIdentifier: com.rutoi.watchtunes
-        WKBackgroundModes:
+        UIBackgroundModes:
           - audio
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
