@@ -179,7 +179,7 @@ final class Store: ObservableObject {
 @main
 struct WatchTunesWatchApp: App {
     @StateObject private var store = Store()
-    var body: some Scene { WindowGroup { AlbumsView().environmentObject(store) } }
+    var body: some Scene { WindowGroup { AlbumsView().environmentObject(store).preferredColorScheme(.light) } }
 }
 
 struct NowPlayingBar: View {
@@ -274,9 +274,7 @@ struct TracksView: View {
                         }
                     }
                     .listRowBackground(store.current == t ? Color.amber.opacity(0.22) : Color.surface)
-                    .swipeActions(edge: .trailing) {
-                        Button { addTarget = t } label: { Label("追加", systemImage: "plus") }.tint(Color.amber)
-                    }
+                    .onLongPressGesture { addTarget = t }
                 }
                 if !a.tracks.isEmpty {
                     Button("アルバムを保存") { Task { await store.saveAlbum(a.tracks) } }
@@ -322,7 +320,7 @@ struct NewAlbumView: View {
     @State private var name = ""
     var body: some View {
         List {
-            TextField("アルバム名", text: $name)
+            TextField("アルバム名", text: $name).foregroundStyle(Color.ink)
             Button("作成") { store.createCustom(name); dismiss() }
                 .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
@@ -345,7 +343,7 @@ struct AddToAlbumSheet: View {
                 if store.customs.isEmpty { Text("まだアルバムがありません").font(.caption2).foregroundStyle(Color.sub) }
             }
             Section("新規に作って追加") {
-                TextField("アルバム名", text: $newName)
+                TextField("アルバム名", text: $newName).foregroundStyle(Color.ink)
                 Button("作成して追加") {
                     store.createCustom(newName)
                     if let c = store.customs.last { store.addTrack(to: c.id, track) }
