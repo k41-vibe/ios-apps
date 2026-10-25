@@ -190,7 +190,6 @@ struct AlbumsView: View {
                     Button("再読み込み") { Task { await store.loadLibrary() } }
                 }
             }
-            .listStyle(.carousel)
             .navigationTitle("WatchTunes")
             .containerBackground(Color.bg, for: .navigation)
         }
@@ -215,7 +214,7 @@ struct TracksView: View {
                     Button { goNow = true; Task { await store.playAlbum(a, from: i) } } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(t.title).font(.body).foregroundStyle(Color.ink)
+                                Text(t.title).font(store.current == t ? .body.weight(.semibold) : .body).foregroundStyle(store.current == t ? Color.amberDeep : Color.ink)
                                 Text(t.artist).font(.caption2).foregroundStyle(Color.sub)
                             }
                             Spacer()
@@ -234,7 +233,6 @@ struct TracksView: View {
                 }
             }
         }
-        .listStyle(.carousel)
         .navigationTitle(title)
         .containerBackground(Color.bg, for: .navigation)
         .task { album = await store.fetchAlbum(q) }
