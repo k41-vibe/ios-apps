@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import MediaPlayer
 
 // resolver の候補。届いた方を自動で使う(時計で打ち込まないため)
 let CANDIDATES = ["http://192.168.10.103:8080", "http://100.111.178.20:8080"]
@@ -42,6 +43,28 @@ final class Store: ObservableObject {
         try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
         return d
     }()
+
+    init() { setupRemote() }
+
+    // 時計面に戻っても鳴り続けるよう、システムに再生中として登録する
+    private func setupRemote() {
+        let c = MPRemoteCommandCenter.shared()
+        c.togglePlayPauseCommand.addTarget { [weak self] _ in Task { @MainActor in self?.toggle() }; return .success }
+        c.playCommand.addTarget { [weak self] _ in Task { @MainActor in if self?.isPlaying == false { self?.toggle() } }; return .success }
+        c.pauseCommand.addTarget { [weak self] _ in Task { @MainActor in if self?.isPlaying == true { self?.toggle() } }; return .success }
+        c.nextTrackCommand.addTarget { [weak self] _ in Task { @MainActor in self?.next() }; return .success }
+        c.previousTrackCommand.addTarget { [weak self] _ in Task { @MainActor in self?.previous() }; return .success }
+    }
+
+    private func updateNowPlaying() {
+        var info: [String: Any] = [:]
+        info[MPMediaItemPropertyTitle] = current?.title ?? ""
+        info[MPMediaItemPropertyArtist] = current?.artist ?? ""
+        if let d = player?.currentItem?.duration.seconds, d.isFinite { info[MPMediaItemPropertyPlaybackDuration] = d }
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = player?.currentTime().seconds ?? 0
+        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
 
     func localURL(_ id: String) -> URL { saveDir.appendingPathComponent("\(id).m4a") }
     func isSaved(_ id: String) -> Bool { FileManager.default.fileExists(atPath: localURL(id).path) }
@@ -97,6 +120,7 @@ final class Store: ObservableObject {
         NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item,
                                                queue: .main) { [weak self] _ in self?.next() }
         p.play(); isPlaying = true
+        updateNowPlaying()
     }
 
     @discardableResult
@@ -115,6 +139,7 @@ final class Store: ObservableObject {
         guard let p = player else { return }
         if isPlaying { p.pause() } else { p.play() }
         isPlaying.toggle()
+        updateNowPlaying()
     }
 }
 
