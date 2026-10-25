@@ -72,7 +72,11 @@ final class Store: ObservableObject {
     }
 
     func localURL(_ id: String) -> URL { saveDir.appendingPathComponent("\(id).m4a") }
-    func isSaved(_ id: String) -> Bool { FileManager.default.fileExists(atPath: localURL(id).path) }
+    func isSaved(_ id: String) -> Bool {
+        if let a = try? FileManager.default.attributesOfItem(atPath: localURL(id).path),
+           let sz = a[.size] as? Int { return sz > 4096 }
+        return false
+    }
 
     private func get(_ url: URL, timeout: TimeInterval = 10) async throws -> Data {
         var r = URLRequest(url: url); r.timeoutInterval = timeout
@@ -141,7 +145,11 @@ final class Store: ObservableObject {
         guard let u = cc.url else { return false }
         downloadingID = t.id
         defer { downloadingID = nil }
-        guard let data = try? await get(u, timeout: 180) else { return false }
+        var rq = URLRequest(url: u); rq.timeoutInterval = 180
+        guard let (data, resp) = try? await URLSession.shared.data(for: rq),
+              let http = resp as? HTTPURLResponse, http.statusCode == 200,
+              (http.value(forHTTPHeaderField: "Content-Type") ?? "").hasPrefix("audio"),
+              data.count > 4096 else { return false }
         do { try data.write(to: localURL(t.id)); return true } catch { return false }
     }
 
