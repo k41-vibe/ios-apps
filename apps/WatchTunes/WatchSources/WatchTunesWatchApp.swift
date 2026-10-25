@@ -18,8 +18,8 @@ extension Color {
     static let amberDeep = Color(0xD06A28)
 }
 
-struct LibItem: Decodable, Identifiable { let title: String; let q: String; var id: String { q } }
-struct Track: Decodable, Identifiable, Equatable { let id: String; let title: String; let artist: String; let duration: Int? }
+struct LibItem: Decodable, Identifiable { let id: String; let title: String }
+struct Track: Decodable, Identifiable, Equatable { let id: String; let title: String; let artist: String; let src: String }
 struct Album: Decodable { let title: String?; let cover: String?; let tracks: [Track] }
 
 @MainActor
@@ -89,10 +89,10 @@ final class Store: ObservableObject {
         status = "接続先に届きません。Wi-Fi を確認してください"
     }
 
-    func fetchAlbum(_ q: String) async -> Album? {
-        guard let b = base, var c = URLComponents(string: b + "/album") else { return nil }
-        c.queryItems = [URLQueryItem(name: "q", value: q)]
-        guard let u = c.url, let data = try? await get(u, timeout: 25) else { return nil }
+    func fetchCollection(_ id: String) async -> Album? {
+        guard let b = base, var c = URLComponents(string: b + "/collection") else { return nil }
+        c.queryItems = [URLQueryItem(name: "id", value: id)]
+        guard let u = c.url, let data = try? await get(u, timeout: 60) else { return nil }
         return try? JSONDecoder().decode(Album.self, from: data)
     }
 
@@ -130,7 +130,9 @@ final class Store: ObservableObject {
     @discardableResult
     func ensureSaved(_ t: Track) async -> Bool {
         if isSaved(t.id) { return true }
-        guard let b = base, let u = URL(string: b + "/audio/\(t.id).m4a") else { return false }
+        guard let b = base, var cc = URLComponents(string: b + "/audio") else { return false }
+        cc.queryItems = [URLQueryItem(name: "src", value: t.src)]
+        guard let u = cc.url else { return false }
         downloadingID = t.id
         defer { downloadingID = nil }
         guard let data = try? await get(u, timeout: 180) else { return false }
@@ -177,7 +179,7 @@ struct AlbumsView: View {
             List {
                 NowPlayingBar()
                 ForEach(store.lib) { item in
-                    NavigationLink { TracksView(q: item.q, title: item.title) } label: {
+                    NavigationLink { TracksView(collId: item.id, title: item.title) } label: {
                         HStack(spacing: 10) {
                             Image(systemName: "opticaldisc.fill").foregroundStyle(Color.amber)
                             Text(item.title).foregroundStyle(Color.ink)
@@ -199,7 +201,7 @@ struct AlbumsView: View {
 
 struct TracksView: View {
     @EnvironmentObject var store: Store
-    let q: String
+    let collId: String
     let title: String
     @State private var album: Album?
     @State private var goNow = false
@@ -235,7 +237,7 @@ struct TracksView: View {
         }
         .navigationTitle(title)
         .containerBackground(Color.bg, for: .navigation)
-        .task { album = await store.fetchAlbum(q) }
+        .task { album = await store.fetchCollection(collId) }
         .navigationDestination(isPresented: $goNow) { NowPlayingView() }
     }
 }
