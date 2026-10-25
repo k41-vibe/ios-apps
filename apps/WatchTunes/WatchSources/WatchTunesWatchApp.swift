@@ -31,8 +31,11 @@ final class Store: ObservableObject {
     @Published var progress = 0.0
     @Published var downloadingID: String?
 
+    private var queue: [Track] = []
+    private var index = 0
     private var player: AVPlayer?
     private var observer: Any?
+
     private let saveDir: URL = {
         let d = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("audio")
@@ -67,19 +70,32 @@ final class Store: ObservableObject {
         return try? JSONDecoder().decode(Album.self, from: data)
     }
 
-    // 無ければ保存してから再生。保存済みは offline でも鳴る
-    func play(_ t: Track, cover: String?) async {
-        current = t; currentCover = cover
+    // アルバムをキューに入れ、指定の曲から再生
+    func playAlbum(_ album: Album, from i: Int) async {
+        queue = album.tracks; index = i; currentCover = album.cover
+        await playCurrent()
+    }
+
+    func next() { Task { if index + 1 < queue.count { index += 1; await playCurrent() } } }
+    func previous() { Task { if index > 0 { index -= 1; await playCurrent() } } }
+
+    private func playCurrent() async {
+        guard queue.indices.contains(index) else { return }
+        let t = queue[index]; current = t; progress = 0
         if !isSaved(t.id), !(await ensureSaved(t)) { status = "取得に失敗しました"; return }
         let sess = AVAudioSession.sharedInstance()
         try? sess.setCategory(.playback, mode: .default); try? sess.setActive(true)
         if let o = observer { player?.removeTimeObserver(o); observer = nil }
-        let p = AVPlayer(url: localURL(t.id)); player = p
+        NotificationCenter.default.removeObserver(self)
+        let item = AVPlayerItem(url: localURL(t.id))
+        let p = AVPlayer(playerItem: item); player = p
         observer = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 2),
                                              queue: .main) { [weak self] time in
             guard let self, let d = p.currentItem?.duration.seconds, d > 0 else { return }
             self.progress = time.seconds / d
         }
+        NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item,
+                                               queue: .main) { [weak self] _ in self?.next() }
         p.play(); isPlaying = true
     }
 
@@ -155,27 +171,29 @@ struct TracksView: View {
     var body: some View {
         List {
             if let cover = album?.cover {
-                Artwork(url: cover, size: 120).frame(maxWidth: .infinity).listRowBackground(Color.clear)
+                Artwork(url: cover, size: 110).frame(maxWidth: .infinity).listRowBackground(Color.clear)
             }
             NowPlayingBar()
-            ForEach(album?.tracks ?? []) { t in
-                Button { Task { await store.play(t, cover: album?.cover) } } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(t.title).font(.body).foregroundStyle(Color.ink)
-                            Text(t.artist).font(.caption2).foregroundStyle(Color.sub)
-                        }
-                        Spacer()
-                        if store.downloadingID == t.id {
-                            ProgressView().tint(Color.amber)
-                        } else if store.isSaved(t.id) {
-                            Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.amber)
+            if let a = album {
+                ForEach(Array(a.tracks.enumerated()), id: \.element.id) { i, t in
+                    Button { Task { await store.playAlbum(a, from: i) } } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(t.title).font(.body).foregroundStyle(Color.ink)
+                                Text(t.artist).font(.caption2).foregroundStyle(Color.sub)
+                            }
+                            Spacer()
+                            if store.downloadingID == t.id {
+                                ProgressView().tint(Color.amber)
+                            } else if store.isSaved(t.id) {
+                                Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.amber)
+                            }
                         }
                     }
                 }
-            }
-            if let a = album, !a.tracks.isEmpty {
-                Button("アルバムを保存") { Task { await store.saveAlbum(a.tracks) } }
+                if !a.tracks.isEmpty {
+                    Button("アルバムを保存") { Task { await store.saveAlbum(a.tracks) } }
+                }
             }
         }
         .navigationTitle(title)
@@ -186,21 +204,32 @@ struct TracksView: View {
 struct NowPlayingView: View {
     @EnvironmentObject var store: Store
     var body: some View {
-        VStack(spacing: 10) {
-            Artwork(url: store.currentCover, size: 104)
-            Text(store.current?.title ?? "")
-                .font(.system(.title3, design: .rounded).weight(.semibold))
-                .foregroundStyle(Color.ink).lineLimit(2).multilineTextAlignment(.center)
-            Text(store.current?.artist ?? "").font(.caption).foregroundStyle(Color.sub)
-            ProgressView(value: store.progress.isFinite ? min(max(store.progress, 0), 1) : 0).tint(Color.amber)
-            Button { store.toggle() } label: {
-                Image(systemName: store.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.title2).foregroundStyle(Color.bg)
-                    .frame(width: 54, height: 54).background(Color.amber, in: Circle())
+        ScrollView {
+            VStack(spacing: 8) {
+                Artwork(url: store.currentCover, size: 84)
+                Text(store.current?.title ?? "")
+                    .font(.system(.headline, design: .rounded))
+                    .foregroundStyle(Color.ink).lineLimit(2).multilineTextAlignment(.center)
+                Text(store.current?.artist ?? "").font(.caption2).foregroundStyle(Color.sub).lineLimit(1)
+                ProgressView(value: store.progress.isFinite ? min(max(store.progress, 0), 1) : 0).tint(Color.amber)
+                HStack(spacing: 18) {
+                    Button { store.previous() } label: {
+                        Image(systemName: "backward.fill").font(.title3).foregroundStyle(Color.ink)
+                    }
+                    Button { store.toggle() } label: {
+                        Image(systemName: store.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.title3).foregroundStyle(Color.bg)
+                            .frame(width: 46, height: 46).background(Color.amber, in: Circle())
+                    }
+                    Button { store.next() } label: {
+                        Image(systemName: "forward.fill").font(.title3).foregroundStyle(Color.ink)
+                    }
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 2)
             }
-            .buttonStyle(.plain)
+            .padding(.horizontal, 6)
         }
-        .padding(.horizontal, 8)
         .navigationTitle("再生中")
     }
 }
