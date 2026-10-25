@@ -108,7 +108,7 @@ final class Store: ObservableObject {
         let t = queue[index]; current = t; progress = 0
         if !isSaved(t.id), !(await ensureSaved(t)) { status = "取得に失敗しました"; return }
         let sess = AVAudioSession.sharedInstance()
-        try? sess.setCategory(.playback, mode: .default); try? sess.setActive(true)
+        try? sess.setCategory(.playback, mode: .default, policy: .longFormAudio); try? sess.setActive(true)
         if let o = observer { player?.removeTimeObserver(o); observer = nil }
         NotificationCenter.default.removeObserver(self)
         let item = AVPlayerItem(url: localURL(t.id))
@@ -194,6 +194,7 @@ struct TracksView: View {
     let q: String
     let title: String
     @State private var album: Album?
+    @State private var goNow = false
     var body: some View {
         List {
             if let cover = album?.cover {
@@ -202,7 +203,7 @@ struct TracksView: View {
             NowPlayingBar()
             if let a = album {
                 ForEach(Array(a.tracks.enumerated()), id: \.element.id) { i, t in
-                    Button { Task { await store.playAlbum(a, from: i) } } label: {
+                    Button { goNow = true; Task { await store.playAlbum(a, from: i) } } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(t.title).font(.body).foregroundStyle(Color.ink)
@@ -224,6 +225,7 @@ struct TracksView: View {
         }
         .navigationTitle(title)
         .task { album = await store.fetchAlbum(q) }
+        .navigationDestination(isPresented: $goNow) { NowPlayingView() }
     }
 }
 
