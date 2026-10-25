@@ -19,8 +19,9 @@ extension Color {
 }
 
 struct LibItem: Decodable, Identifiable { let id: String; let title: String }
-struct Track: Decodable, Identifiable, Equatable { let id: String; let title: String; let artist: String; let src: String }
+struct Track: Codable, Identifiable, Equatable { let id: String; let title: String; let artist: String; let src: String }
 struct Album: Decodable { let title: String?; let cover: String?; let tracks: [Track] }
+struct CustomAlbum: Codable, Identifiable { var id: String; var name: String; var tracks: [Track] }
 
 @MainActor
 final class Store: ObservableObject {
@@ -32,6 +33,7 @@ final class Store: ObservableObject {
     @Published var isPlaying = false
     @Published var progress = 0.0
     @Published var downloadingID: String?
+    @Published var customs: [CustomAlbum] = []
     @Published var volume = 0.7
 
     private var queue: [Track] = []
@@ -47,7 +49,7 @@ final class Store: ObservableObject {
         return d
     }()
 
-    init() { setupRemote() }
+    init() { setupRemote(); loadCustoms() }
 
     // 時計面に戻っても鳴り続けるよう、システムに再生中として登録する
     private func setupRemote() {
@@ -98,7 +100,11 @@ final class Store: ObservableObject {
 
     // アルバムをキューに入れ、指定の曲から再生
     func playAlbum(_ album: Album, from i: Int) async {
-        queue = album.tracks; index = i; currentCover = album.cover
+        await playList(album.tracks, from: i, cover: album.cover)
+    }
+
+    func playList(_ tracks: [Track], from i: Int, cover: String?) async {
+        queue = tracks; index = i; currentCover = cover
         await playCurrent()
     }
 
@@ -149,6 +155,25 @@ final class Store: ObservableObject {
     }
 
     func setVolume(_ v: Double) { volume = v; player?.volume = Float(v) }
+
+    private var customFile: URL { saveDir.appendingPathComponent("custom.json") }
+    func loadCustoms() {
+        if let d = try? Data(contentsOf: customFile),
+           let c = try? JSONDecoder().decode([CustomAlbum].self, from: d) { customs = c }
+    }
+    private func saveCustoms() {
+        if let d = try? JSONEncoder().encode(customs) { try? d.write(to: customFile) }
+    }
+    func createCustom(_ name: String) {
+        let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        customs.append(CustomAlbum(id: UUID().uuidString, name: n.isEmpty ? "新しいアルバム" : n, tracks: []))
+        saveCustoms()
+    }
+    func addTrack(to id: String, _ t: Track) {
+        guard let i = customs.firstIndex(where: { $0.id == id }) else { return }
+        if !customs[i].tracks.contains(t) { customs[i].tracks.append(t); saveCustoms() }
+    }
+    func deleteCustom(_ id: String) { customs.removeAll { $0.id == id }; saveCustoms() }
 }
 
 @main
@@ -178,6 +203,26 @@ struct AlbumsView: View {
         NavigationStack {
             List {
                 NowPlayingBar()
+                if !store.customs.isEmpty {
+                    Section("自作アルバム") {
+                        ForEach(store.customs) { c in
+                            NavigationLink { CustomAlbumView(album: c) } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "star.fill").foregroundStyle(Color.amber)
+                                    Text(c.name).foregroundStyle(Color.ink)
+                                }
+                            }
+                            .listRowBackground(Color.surface)
+                        }
+                    }
+                }
+                NavigationLink { NewAlbumView() } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "plus.circle.fill").foregroundStyle(Color.amberDeep)
+                        Text("新規アルバム").foregroundStyle(Color.ink)
+                    }
+                }
+                .listRowBackground(Color.surface)
                 ForEach(store.lib) { item in
                     NavigationLink { TracksView(collId: item.id, title: item.title) } label: {
                         HStack(spacing: 10) {
@@ -205,6 +250,7 @@ struct TracksView: View {
     let title: String
     @State private var album: Album?
     @State private var goNow = false
+    @State private var addTarget: Track?
     var body: some View {
         List {
             if let cover = album?.cover {
@@ -228,6 +274,9 @@ struct TracksView: View {
                         }
                     }
                     .listRowBackground(store.current == t ? Color.amber.opacity(0.22) : Color.surface)
+                    .swipeActions(edge: .trailing) {
+                        Button { addTarget = t } label: { Label("追加", systemImage: "plus") }.tint(Color.amber)
+                    }
                 }
                 if !a.tracks.isEmpty {
                     Button("アルバムを保存") { Task { await store.saveAlbum(a.tracks) } }
@@ -239,6 +288,72 @@ struct TracksView: View {
         .containerBackground(Color.bg, for: .navigation)
         .task { album = await store.fetchCollection(collId) }
         .navigationDestination(isPresented: $goNow) { NowPlayingView() }
+        .sheet(item: $addTarget) { t in AddToAlbumSheet(track: t) }
+    }
+}
+
+struct CustomAlbumView: View {
+    @EnvironmentObject var store: Store
+    let album: CustomAlbum
+    var body: some View {
+        List {
+            NowPlayingBar()
+            ForEach(Array(album.tracks.enumerated()), id: \.element.id) { i, t in
+                Button { Task { await store.playList(album.tracks, from: i, cover: nil) } } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(t.title).font(.body).foregroundStyle(Color.ink)
+                        Text(t.artist).font(.caption2).foregroundStyle(Color.sub)
+                    }
+                }
+                .listRowBackground(Color.surface)
+            }
+            if album.tracks.isEmpty {
+                Text("曲がありません。一覧で曲を左にスワイプして追加できます").font(.caption2).foregroundStyle(Color.sub)
+            }
+        }
+        .navigationTitle(album.name)
+        .containerBackground(Color.bg, for: .navigation)
+    }
+}
+
+struct NewAlbumView: View {
+    @EnvironmentObject var store: Store
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    var body: some View {
+        List {
+            TextField("アルバム名", text: $name)
+            Button("作成") { store.createCustom(name); dismiss() }
+                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .navigationTitle("新規アルバム")
+        .containerBackground(Color.bg, for: .navigation)
+    }
+}
+
+struct AddToAlbumSheet: View {
+    @EnvironmentObject var store: Store
+    @Environment(\.dismiss) private var dismiss
+    let track: Track
+    @State private var newName = ""
+    var body: some View {
+        List {
+            Section("追加先") {
+                ForEach(store.customs) { c in
+                    Button(c.name) { store.addTrack(to: c.id, track); dismiss() }
+                }
+                if store.customs.isEmpty { Text("まだアルバムがありません").font(.caption2).foregroundStyle(Color.sub) }
+            }
+            Section("新規に作って追加") {
+                TextField("アルバム名", text: $newName)
+                Button("作成して追加") {
+                    store.createCustom(newName)
+                    if let c = store.customs.last { store.addTrack(to: c.id, track) }
+                    dismiss()
+                }.disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .navigationTitle("アルバムに追加")
     }
 }
 
