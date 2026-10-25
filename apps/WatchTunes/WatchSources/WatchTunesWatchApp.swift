@@ -114,8 +114,8 @@ struct NowPlayingBar: View {
         if let t = store.current {
             NavigationLink { NowPlayingView() } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: store.isPlaying ? "waveform" : "pause.fill").foregroundStyle(.amber)
-                    Text(t.title).font(.caption).foregroundStyle(.ink).lineLimit(1)
+                    Image(systemName: store.isPlaying ? "waveform" : "pause.fill").foregroundStyle(Color.amber)
+                    Text(t.title).font(.caption).foregroundStyle(Color.ink).lineLimit(1)
                 }
             }
         }
@@ -131,13 +131,13 @@ struct AlbumsView: View {
                 ForEach(store.lib) { item in
                     NavigationLink { TracksView(q: item.q, title: item.title) } label: {
                         HStack(spacing: 10) {
-                            Image(systemName: "opticaldisc").foregroundStyle(.amber)
-                            Text(item.title).foregroundStyle(.ink)
+                            Image(systemName: "opticaldisc").foregroundStyle(Color.amber)
+                            Text(item.title).foregroundStyle(Color.ink)
                         }
                     }
                 }
                 if !store.status.isEmpty {
-                    Text(store.status).font(.caption2).foregroundStyle(.sub)
+                    Text(store.status).font(.caption2).foregroundStyle(Color.sub)
                     Button("再読み込み") { Task { await store.loadLibrary() } }
                 }
             }
@@ -162,14 +162,14 @@ struct TracksView: View {
                 Button { Task { await store.play(t, cover: album?.cover) } } label: {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(t.title).font(.body).foregroundStyle(.ink)
-                            Text(t.artist).font(.caption2).foregroundStyle(.sub)
+                            Text(t.title).font(.body).foregroundStyle(Color.ink)
+                            Text(t.artist).font(.caption2).foregroundStyle(Color.sub)
                         }
                         Spacer()
                         if store.downloadingID == t.id {
-                            ProgressView().tint(.amber)
+                            ProgressView().tint(Color.amber)
                         } else if store.isSaved(t.id) {
-                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.amber)
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.amber)
                         }
                     }
                 }
@@ -190,12 +190,12 @@ struct NowPlayingView: View {
             Artwork(url: store.currentCover, size: 104)
             Text(store.current?.title ?? "")
                 .font(.system(.title3, design: .rounded).weight(.semibold))
-                .foregroundStyle(.ink).lineLimit(2).multilineTextAlignment(.center)
-            Text(store.current?.artist ?? "").font(.caption).foregroundStyle(.sub)
-            ProgressView(value: store.progress.isFinite ? min(max(store.progress, 0), 1) : 0).tint(.amber)
+                .foregroundStyle(Color.ink).lineLimit(2).multilineTextAlignment(.center)
+            Text(store.current?.artist ?? "").font(.caption).foregroundStyle(Color.sub)
+            ProgressView(value: store.progress.isFinite ? min(max(store.progress, 0), 1) : 0).tint(Color.amber)
             Button { store.toggle() } label: {
                 Image(systemName: store.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.title2).foregroundStyle(.bg)
+                    .font(.title2).foregroundStyle(Color.bg)
                     .frame(width: 54, height: 54).background(Color.amber, in: Circle())
             }
             .buttonStyle(.plain)
@@ -212,7 +212,7 @@ struct Artwork: View {
         AsyncImage(url: url.flatMap(URL.init)) { img in
             img.resizable().aspectRatio(contentMode: .fill)
         } placeholder: {
-            ZStack { Color.surface; Image(systemName: "music.note").foregroundStyle(.sub) }
+            ZStack { Color.surface; Image(systemName: "music.note").foregroundStyle(Color.sub) }
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
