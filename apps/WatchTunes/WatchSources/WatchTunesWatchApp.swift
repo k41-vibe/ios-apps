@@ -10,11 +10,12 @@ extension Color {
         self.init(.sRGB, red: Double((hex >> 16) & 0xff) / 255,
                   green: Double((hex >> 8) & 0xff) / 255, blue: Double(hex & 0xff) / 255)
     }
-    static let bg = Color(0x000000)
-    static let surface = Color(0x16151A)
-    static let ink = Color(0xF3F1EC)
-    static let sub = Color(0x8E8A82)
-    static let amber = Color(0xE7B24C)
+    static let bg = Color(0xFFFFFF)
+    static let surface = Color(0xF4EEE6)
+    static let ink = Color(0x1C1B19)
+    static let sub = Color(0x9A9388)
+    static let amber = Color(0xE0843C)
+    static let amberDeep = Color(0xD06A28)
 }
 
 struct LibItem: Decodable, Identifiable { let title: String; let q: String; var id: String { q } }
@@ -31,11 +32,13 @@ final class Store: ObservableObject {
     @Published var isPlaying = false
     @Published var progress = 0.0
     @Published var downloadingID: String?
+    @Published var volume = 0.7
 
     private var queue: [Track] = []
     private var index = 0
     private var player: AVPlayer?
     private var observer: Any?
+    private var endToken: NSObjectProtocol?
 
     private let saveDir: URL = {
         let d = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -110,16 +113,16 @@ final class Store: ObservableObject {
         let sess = AVAudioSession.sharedInstance()
         try? sess.setCategory(.playback, mode: .default, policy: .longFormAudio); try? sess.setActive(true)
         if let o = observer { player?.removeTimeObserver(o); observer = nil }
-        NotificationCenter.default.removeObserver(self)
+        if let token = endToken { NotificationCenter.default.removeObserver(token); endToken = nil }
         let item = AVPlayerItem(url: localURL(t.id))
-        let p = AVPlayer(playerItem: item); player = p
+        let p = AVPlayer(playerItem: item); p.volume = Float(volume); player = p
         observer = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 2),
                                              queue: .main) { [weak self] time in
             guard let self, let d = p.currentItem?.duration.seconds, d > 0 else { return }
             self.progress = time.seconds / d
         }
-        NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item,
-                                               queue: .main) { [weak self] _ in self?.next() }
+        endToken = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item,
+                                               queue: .main) { [weak self] _ in Task { @MainActor in self?.next() } }
         p.play(); isPlaying = true
         updateNowPlaying()
     }
@@ -142,6 +145,8 @@ final class Store: ObservableObject {
         isPlaying.toggle()
         updateNowPlaying()
     }
+
+    func setVolume(_ v: Double) { volume = v; player?.volume = Float(v) }
 }
 
 @main
@@ -160,6 +165,7 @@ struct NowPlayingBar: View {
                     Text(t.title).font(.caption).foregroundStyle(Color.ink).lineLimit(1)
                 }
             }
+            .listRowBackground(Color.amber.opacity(0.18))
         }
     }
 }
@@ -173,17 +179,20 @@ struct AlbumsView: View {
                 ForEach(store.lib) { item in
                     NavigationLink { TracksView(q: item.q, title: item.title) } label: {
                         HStack(spacing: 10) {
-                            Image(systemName: "opticaldisc").foregroundStyle(Color.amber)
+                            Image(systemName: "opticaldisc.fill").foregroundStyle(Color.amber)
                             Text(item.title).foregroundStyle(Color.ink)
                         }
                     }
+                    .listRowBackground(Color.surface)
                 }
                 if !store.status.isEmpty {
                     Text(store.status).font(.caption2).foregroundStyle(Color.sub)
                     Button("再読み込み") { Task { await store.loadLibrary() } }
                 }
             }
+            .listStyle(.carousel)
             .navigationTitle("WatchTunes")
+            .containerBackground(Color.bg, for: .navigation)
         }
         .task { if store.lib.isEmpty { await store.loadLibrary() } }
     }
@@ -217,13 +226,17 @@ struct TracksView: View {
                             }
                         }
                     }
+                    .listRowBackground(store.current == t ? Color.amber.opacity(0.22) : Color.surface)
                 }
                 if !a.tracks.isEmpty {
                     Button("アルバムを保存") { Task { await store.saveAlbum(a.tracks) } }
+                        .listRowBackground(Color.surface)
                 }
             }
         }
+        .listStyle(.carousel)
         .navigationTitle(title)
+        .containerBackground(Color.bg, for: .navigation)
         .task { album = await store.fetchAlbum(q) }
         .navigationDestination(isPresented: $goNow) { NowPlayingView() }
     }
@@ -231,34 +244,42 @@ struct TracksView: View {
 
 struct NowPlayingView: View {
     @EnvironmentObject var store: Store
+    @State private var vol = 0.7
     var body: some View {
-        ScrollView {
-            VStack(spacing: 8) {
-                Artwork(url: store.currentCover, size: 84)
-                Text(store.current?.title ?? "")
-                    .font(.system(.headline, design: .rounded))
-                    .foregroundStyle(Color.ink).lineLimit(2).multilineTextAlignment(.center)
-                Text(store.current?.artist ?? "").font(.caption2).foregroundStyle(Color.sub).lineLimit(1)
-                ProgressView(value: store.progress.isFinite ? min(max(store.progress, 0), 1) : 0).tint(Color.amber)
-                HStack(spacing: 18) {
-                    Button { store.previous() } label: {
-                        Image(systemName: "backward.fill").font(.title3).foregroundStyle(Color.ink)
-                    }
-                    Button { store.toggle() } label: {
-                        Image(systemName: store.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.title3).foregroundStyle(Color.bg)
-                            .frame(width: 46, height: 46).background(Color.amber, in: Circle())
-                    }
-                    Button { store.next() } label: {
-                        Image(systemName: "forward.fill").font(.title3).foregroundStyle(Color.ink)
-                    }
+        VStack(spacing: 6) {
+            Artwork(url: store.currentCover, size: 60)
+            Text(store.current?.title ?? "")
+                .font(.system(.headline, design: .rounded))
+                .foregroundStyle(Color.ink).lineLimit(1)
+            Text(store.current?.artist ?? "").font(.caption2).foregroundStyle(Color.sub).lineLimit(1)
+            ProgressView(value: store.progress.isFinite ? min(max(store.progress, 0), 1) : 0).tint(Color.amber)
+            HStack(spacing: 16) {
+                Button { store.previous() } label: {
+                    Image(systemName: "backward.fill").font(.body).foregroundStyle(Color.ink)
                 }
-                .buttonStyle(.plain)
-                .padding(.top, 2)
+                Button { store.toggle() } label: {
+                    Image(systemName: store.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.title3).foregroundStyle(Color.bg)
+                        .frame(width: 44, height: 44).background(Color.amber, in: Circle())
+                }
+                Button { store.next() } label: {
+                    Image(systemName: "forward.fill").font(.body).foregroundStyle(Color.ink)
+                }
             }
-            .padding(.horizontal, 6)
+            .buttonStyle(.plain)
+            HStack(spacing: 6) {
+                Image(systemName: "speaker.fill").font(.caption2).foregroundStyle(Color.sub)
+                ProgressView(value: vol).tint(Color.amberDeep)
+                Image(systemName: "speaker.wave.3.fill").font(.caption2).foregroundStyle(Color.sub)
+            }
         }
+        .padding(.horizontal, 6)
+        .containerBackground(Color.bg, for: .navigation)
         .navigationTitle("再生中")
+        .focusable(true)
+        .digitalCrownRotation($vol, from: 0, through: 1, by: 0.02, sensitivity: .low, isContinuous: false, isHapticFeedbackEnabled: true)
+        .onChange(of: vol) { _, v in store.setVolume(v) }
+        .onAppear { vol = store.volume }
     }
 }
 
